@@ -8,9 +8,11 @@ from afar and uploads it to the private logs repo on GitHub, as
   today's and yesterday's log, update.log, races-state.json and config.yaml
   (with the support key taken out).
 
-The upload uses config support.logs_token: a GitHub fine-grained token
-that can only write to that one repo. Logs carry athletes' names and
-bibs, so they go to the private repo only - never the public one.
+The upload uses a GitHub fine-grained token that can only write to that
+one repo: config support.logs_token if set (Console chip), else the
+support.key file the hand-out zip carries at the install root. That file
+is never in git - GitHub revokes any of its keys found in a public repo -
+and updates never touch it. Logs go to the private repo only.
 """
 
 import base64
@@ -28,6 +30,20 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 LOG_TAIL_BYTES = 20_000_000      # today's log in full on any normal day (it rotates daily)
+
+
+def bundled_key(root: str = "") -> str:
+    """The key build_package.py put into the install as support.key."""
+    from . import updater
+    try:
+        with open(os.path.join(root or updater.ROOT, "support.key"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def effective_token(config) -> str:
+    return config.support.logs_token or bundled_key()
 
 
 def site_name(app) -> str:
@@ -111,7 +127,8 @@ class SendError(Exception):
 def send(app, note: str = "") -> dict:
     """Upload the bundle; returns {path, url, bytes}."""
     sp = app.config.support
-    if not sp.logs_token:
+    token = effective_token(app.config)
+    if not token:
         raise SendError("no support key on this PC yet - paste the one you were given (Console chip)")
     data = bundle(app, note)
     now = datetime.now()
@@ -121,7 +138,7 @@ def send(app, note: str = "") -> dict:
                        "content": base64.b64encode(data).decode()}).encode()
     req = urllib.request.Request(f"https://api.github.com/repos/{sp.logs_repo}/contents/{path}",
                                  data=body, method="PUT",
-                                 headers={"Authorization": f"Bearer {sp.logs_token}",
+                                 headers={"Authorization": f"Bearer {token}",
                                           "Accept": "application/vnd.github+json",
                                           "X-GitHub-Api-Version": "2022-11-28",
                                           "User-Agent": "rfid-finishlynx-support"})

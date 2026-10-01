@@ -8,6 +8,8 @@ rfid_finishlynx\\, with INSTALL.bat at its top: the committed tree at --ref
 are marked export-ignore in .gitattributes), plus
     VERSION.txt       commit, date
     QUICK-START.pdf   QUICK-START.html printed by Edge (if Edge is there)
+    support.key       the Send-logs key, copied from support.key next to this
+                      repo (git-ignored; never published - see support.py)
 Python 3.12 and every package wheel are tracked in git (python\\, wheels\\),
 so the zip installs with no internet. The recipient unzips it and
 double-clicks INSTALL.bat - see QUICK-START.html.
@@ -76,6 +78,13 @@ def main(argv=None) -> int:
         git("archive", "--format=zip", f"--prefix={PREFIX}", "-o", raw, a.ref)
         extras = {PREFIX + "VERSION.txt": f"RFID FinishLynx middleware\ncommit {commit} ({stamp})\n"
                                           f"built {datetime.now():%Y-%m-%d %H:%M}\n".encode()}
+        # The Send-logs key (support.py): in the zip, never in git
+        key_file = os.path.join(ROOT, "support.key")
+        if os.path.isfile(key_file):
+            with open(key_file, "rb") as f:
+                extras[PREFIX + "support.key"] = f.read().strip() + b"\n"
+        else:
+            print("NOTE: no support.key next to the repo - Send logs needs a key pasted on that PC")
         with zipfile.ZipFile(raw) as z:
             names = z.namelist()
             if PREFIX + "QUICK-START.html" in names:

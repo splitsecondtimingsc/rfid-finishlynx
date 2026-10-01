@@ -116,6 +116,12 @@ class TestApply(InstallTestCase):
         self.assertEqual(sorted(m["replaced"]), ["VERSION.txt", "rfid_finishlynx/main.py"])
         self.assertEqual(m["added"], ["rfid_finishlynx/brand_new.py"])
 
+    def test_install_key_survives_updates(self):
+        with open(os.path.join(self.root, "support.key"), "w") as f:
+            f.write("github_pat_FROMZIP\n")
+        self.apply(dict(NEW, **{"support.key": "something else\n"}))
+        self.assertEqual(read(self.root, "support.key"), "github_pat_FROMZIP\n")
+
     def test_broken_release_changes_nothing(self):
         broken = dict(NEW, **{"rfid_finishlynx/main.py": "def oops(:\n"})
         with self.assertRaises(updater.UpdateError):
@@ -232,8 +238,39 @@ class TestSupport(unittest.TestCase):
 
     def test_no_key_yet(self):
         self.app.config.support.logs_token = ""
-        with self.assertRaisesRegex(support.SendError, "no support key"):
-            support.send(self.app)
+        with mock.patch.object(support, "bundled_key", return_value=""):
+            with self.assertRaisesRegex(support.SendError, "no support key"):
+                support.send(self.app)
+
+    def test_install_key_is_the_default(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, "support.key"), "w") as f:
+            f.write("github_pat_FROMZIP\n")
+        self.assertEqual(support.bundled_key(root), "github_pat_FROMZIP")
+        self.app.config.support.logs_token = ""
+        with mock.patch.object(support, "bundled_key", return_value="github_pat_FROMZIP"):
+            self.assertEqual(support.effective_token(self.app.config), "github_pat_FROMZIP")
+            self.app.config.support.logs_token = "github_pat_TYPED"
+            self.assertEqual(support.effective_token(self.app.config), "github_pat_TYPED")   # typed one wins
+
+
+class TestPublishGuard(unittest.TestCase):
+    """GitHub revokes its keys found in a public repo: never publish one."""
+
+    def test_key_pattern(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "publish_release", os.path.join(HERE, os.pardir, "tools", "publish_release.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, os.path.join(HERE, os.pardir, "tools"))
+        self.addCleanup(sys.path.remove, os.path.join(HERE, os.pardir, "tools"))
+        spec.loader.exec_module(mod)
+        # built at run time: this file itself must not hold a key-shaped string
+        self.assertTrue(mod.KEY_RE.search(b"key: github_pat_" + b"11" + b"A" * 30))
+        self.assertTrue(mod.KEY_RE.search(b"ghp_" + b"a" * 36))
+        self.assertFalse(mod.KEY_RE.search(b"logs_token: github_pat_SECRET"))   # test fixtures
+        self.assertFalse(mod.KEY_RE.search(b"placeholder=\"Support key (github_pat_...)\""))
 
 
 class TestWebEndpoints(unittest.TestCase):

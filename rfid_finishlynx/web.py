@@ -1549,6 +1549,12 @@ def api_setup_check():
         return jsonify({'rows': [], 'error': str(e)}), 500
 
 
+def _support_key_set(config) -> bool:
+    """A Send-logs key is there (typed in, or support.key from the install)."""
+    from .support import effective_token
+    return bool(effective_token(config))
+
+
 @app.route('/api/config', methods=['GET'])
 def api_get_config():
     """Get current configuration."""
@@ -1609,7 +1615,7 @@ def api_get_config():
         # the support key itself never leaves the PC
         'support': {
             'site_name': config.support.site_name,
-            'token_set': bool(config.support.logs_token),
+            'token_set': _support_key_set(config),
             'update_repo': config.support.update_repo,
         },
     })
@@ -2998,7 +3004,8 @@ def api_support_settings():
     if 'site_name' in d:
         sp.site_name = str(d['site_name'] or '').strip()[:60]
     _application.save_config()
-    return jsonify({'success': True, 'token_set': bool(sp.logs_token), 'site_name': sp.site_name})
+    return jsonify({'success': True, 'token_set': _support_key_set(_application.config),
+                    'site_name': sp.site_name})
 
 
 # --- Athlete/PPL API endpoints ---

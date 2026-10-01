@@ -37,7 +37,8 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NEVER_REPLACE = ("config.yaml", "races-state.json", "deploy/start-console.bat", "deploy/boot_guard.py")
+NEVER_REPLACE = ("config.yaml", "races-state.json", "support.key",
+                 "deploy/start-console.bat", "deploy/boot_guard.py")
 KEEP_BACKUPS = 3
 USER_AGENT = "rfid-finishlynx-updater"
 
