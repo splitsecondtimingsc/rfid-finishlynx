@@ -274,6 +274,9 @@ class LoRaTransport(Transport):
 
     RECONNECT_MIN_SEC = 1.0
     RECONNECT_MAX_SEC = 30.0
+    FAIL_REMIND_SEC = 600.0          # while unreachable: one log line per 10 min
+    _fail_since = None               # time.time() of the first failed connect, None while up
+    _fail_logged = 0.0
 
     # The radio fragments anything longer than this into separate packets.
     MAX_PACKET_BYTES = 240
@@ -382,10 +385,25 @@ class LoRaTransport(Transport):
                 self._serial = stream
                 self._connected = True
                 self.ever_connected = True
+            if self._fail_since is not None:
+                logger.info(f"LoRa gateway answering again after "
+                            f"{(time.time() - self._fail_since) / 60:.1f} min")
+                self._fail_since = None
             return True
 
         except OSError as e:
-            logger.error(f"Failed to connect to LoRa: {e}")
+            # One line when it starts failing and a reminder every 10 min -
+            # an absent gateway used to log two lines every 30 s all meet.
+            now = time.time()
+            if self._fail_since is None:
+                self._fail_since = self._fail_logged = now
+                logger.error(f"Failed to connect to LoRa: {e} (retrying in the background)")
+            elif now - self._fail_logged >= self.FAIL_REMIND_SEC:
+                self._fail_logged = now
+                logger.warning(f"LoRa gateway {self.config.port} still unreachable after "
+                               f"{(now - self._fail_since) / 60:.0f} min: {e}")
+            else:
+                logger.debug(f"Failed to connect to LoRa: {e}")
             with self._lock:
                 self._serial = None
                 self._connected = False
@@ -605,7 +623,7 @@ class LoRaTransport(Transport):
                     buffer = b""
                 else:
                     delay = min(delay * 2, self.RECONNECT_MAX_SEC)
-                    logger.warning(f"LoRa link down, retrying in {delay:.0f}s")
+                    logger.debug(f"LoRa link down, retrying in {delay:.0f}s")
                 continue
 
             try:

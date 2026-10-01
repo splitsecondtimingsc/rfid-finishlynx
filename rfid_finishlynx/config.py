@@ -200,6 +200,17 @@ class CameraStartConfig:
 
 
 @dataclass
+class SupportConfig:
+    """Updates from the public GitHub release and "Send logs" to the private
+    logs repo (updater.py, support.py). logs_token is a GitHub fine-grained
+    token that can only write to logs_repo; it is never sent to the page."""
+    update_repo: str = "splitsecondtimingsc/rfid-finishlynx"
+    logs_repo: str = "splitsecondtimingsc/rfid-logs"
+    logs_token: str = ""
+    site_name: str = ""          # folder name in the logs repo; blank = this PC's name
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     camera_start: CameraStartConfig = field(default_factory=CameraStartConfig)
@@ -214,6 +225,7 @@ class Config:
     races: RacesConfig = field(default_factory=RacesConfig)
     led_clock: LEDClockConfig = field(default_factory=LEDClockConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    support: SupportConfig = field(default_factory=SupportConfig)
     remote_readers: List[RemoteReaderEntry] = field(default_factory=list)
     event_directory: Optional[str] = None  # Directory containing lynx.evt and lynx.ppl
     evt_file: Optional[str] = None  # Name of the .evt file (e.g., "lynx.evt")
@@ -370,6 +382,15 @@ def load_config(config_path: Optional[str] = None) -> Config:
             config.logging = LoggingConfig(
                 level=lg.get("level", config.logging.level),
                 file=lg.get("file", config.logging.file),
+            )
+
+        if "support" in data:
+            sp = data["support"] or {}
+            config.support = SupportConfig(
+                update_repo=str(sp.get("update_repo") or config.support.update_repo),
+                logs_repo=str(sp.get("logs_repo") or config.support.logs_repo),
+                logs_token=str(sp.get("logs_token") or ""),
+                site_name=str(sp.get("site_name") or ""),
             )
 
         # Load event directory and file

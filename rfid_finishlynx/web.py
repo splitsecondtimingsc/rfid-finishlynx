@@ -1265,6 +1265,43 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 _application: Optional['Application'] = None
 
 
+# --- Operator actions in the log (2026-10-01) ---
+# Every button that changes something is a POST to /api/...: one "UI:" line
+# each, with the pane or read it touched, so a log sent for support shows
+# what the operator did (most actions logged nothing before).
+_UI_HIDDEN = {"token", "logs_token", "password"}
+
+
+@app.before_request
+def _log_operator_action():
+    if request.method != "POST" or not request.path.startswith("/api/"):
+        return
+    try:
+        body = request.get_json(silent=True)
+        if isinstance(body, dict):
+            body = {k: ("(hidden)" if k in _UI_HIDDEN else v) for k, v in body.items()}
+        import json
+        detail = json.dumps(body, default=str)[:300] if body else ""
+        args = request.view_args or {}
+        mgr = _race_manager()
+        who = ""
+        if mgr is not None and args.get("key") in mgr.races:
+            who = f" [{mgr.races[args['key']].name}]"
+        if mgr is not None and args.get("read_id") in mgr.reads:
+            r = mgr.reads[args["read_id"]]
+            who += f" [read {r.id}: bib {r.bib} at {r.point} {r.eff_ts.strftime('%H:%M:%S.%f')[:-3]}]"
+        logger.info(f"UI: {request.path}{who} {detail}".rstrip())
+    except Exception:
+        logger.debug("UI action log failed", exc_info=True)
+
+
+@app.after_request
+def _log_operator_failure(response):
+    if request.method == "POST" and request.path.startswith("/api/") and response.status_code >= 400:
+        logger.warning(f"UI: {request.path} -> HTTP {response.status_code}")
+    return response
+
+
 def _autoload_meet(application):
     """Load athlete data from the persisted meet folder at boot."""
     directory = application.config.event_directory
@@ -1286,6 +1323,12 @@ def set_application(application: 'Application'):
         _autoload_meet(application)
     except Exception:
         logger.exception("Meet folder autoload failed")
+    # After a self-update: once this version has run for 90 s it is kept
+    # (deploy/boot_guard.py rolls back one that keeps failing to start).
+    from . import updater
+    t = threading.Timer(90.0, lambda: updater.confirm())
+    t.daemon = True
+    t.start()
 
 
 def emit_tag_read(bib: str, timestamp: datetime, reader_id: str,
@@ -1563,6 +1606,12 @@ def api_get_config():
         },
         'event_directory': config.event_directory,
         'evt_file': config.evt_file,
+        # the support key itself never leaves the PC
+        'support': {
+            'site_name': config.support.site_name,
+            'token_set': bool(config.support.logs_token),
+            'update_repo': config.support.update_repo,
+        },
     })
 
 
@@ -2839,19 +2888,117 @@ def api_clear_logs():
     return jsonify({'success': True})
 
 
+def _exit_soon(delay: float = 0.5):
+    """Shut the app down after the response is sent; start-console.bat's
+    loop starts it again."""
+    if _application:
+        _application.shutdown()
+
+    def do_exit():
+        import time
+        time.sleep(delay)
+        os._exit(0)
+    threading.Thread(target=do_exit, daemon=True).start()
+
+
 @app.route('/api/shutdown', methods=['POST'])
 def api_shutdown():
     """Gracefully shut down the middleware."""
     logger.info("Shutdown requested via web UI")
-    if _application:
-        _application.shutdown()
-    # Schedule exit after response is sent
-    def do_exit():
-        import time
-        time.sleep(0.5)
-        os._exit(0)
-    threading.Thread(target=do_exit, daemon=True).start()
+    _exit_soon()
     return jsonify({'success': True, 'message': 'Shutting down...'})
+
+
+# --- Updates from GitHub and "Send logs" (updater.py, support.py) ---
+
+def _busy_reasons() -> list:
+    """Why restarting now would hurt: a racing pane, FinishLynx's clock."""
+    out = []
+    mgr = _race_manager()
+    if mgr:
+        racing = [r.name for r in mgr.races.values() if r.status == "racing"]
+        if racing:
+            out.append("racing: " + ", ".join(racing))
+    try:
+        if _application and _application._finishlynx_clock_gun() is not None:
+            out.append("FinishLynx's race clock is running")
+    except Exception:
+        pass
+    return out
+
+
+@app.route('/api/update/check')
+def api_update_check():
+    from . import updater
+    if not _application:
+        return jsonify({'error': 'Application not initialized'}), 503
+    return jsonify(updater.check(_application.config.support.update_repo))
+
+
+@app.route('/api/update/apply', methods=['POST'])
+def api_update_apply():
+    """Download the release, install it, restart. Body {"force": true} goes
+    ahead while a race runs."""
+    from . import updater
+    if not _application:
+        return jsonify({'error': 'Application not initialized'}), 503
+    d = request.get_json(silent=True) or {}
+    busy = _busy_reasons()
+    if busy and not d.get('force'):
+        return jsonify({'success': False, 'busy': busy})
+    try:
+        zip_bytes = updater.download(_application.config.support.update_repo)
+        out = updater.apply(zip_bytes)
+    except updater.UpdateError as e:
+        return jsonify({'success': False, 'error': str(e)})
+    except Exception as e:
+        logger.exception("Update failed")
+        return jsonify({'success': False, 'error': f'update failed: {e}'})
+    logger.info("Restarting on the new version")
+    _exit_soon(1.5)
+    return jsonify(dict(out, success=True))
+
+
+@app.route('/api/update/rollback', methods=['POST'])
+def api_update_rollback():
+    from . import updater
+    try:
+        out = updater.rollback()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    _exit_soon(1.5)
+    return jsonify(dict(out, success=True))
+
+
+@app.route('/api/support/send', methods=['POST'])
+def api_support_send():
+    from . import support
+    if not _application:
+        return jsonify({'error': 'Application not initialized'}), 503
+    note = str((request.get_json(silent=True) or {}).get('note', ''))[:2000]
+    try:
+        return jsonify(dict(support.send(_application, note), success=True))
+    except support.SendError as e:
+        return jsonify({'success': False, 'error': str(e)})
+    except Exception as e:
+        logger.exception("Send logs failed")
+        return jsonify({'success': False, 'error': f'sending failed: {e}'})
+
+
+@app.route('/api/support/settings', methods=['POST'])
+def api_support_settings():
+    """{"token": "..."} sets the support key ("" clears it); {"site_name"}.
+    The key is stored in config.yaml and never sent back to a page."""
+    if not _application:
+        return jsonify({'error': 'Application not initialized'}), 503
+    d = request.get_json(silent=True) or {}
+    sp = _application.config.support
+    if 'token' in d:
+        sp.logs_token = str(d['token'] or '').strip()
+    if 'site_name' in d:
+        sp.site_name = str(d['site_name'] or '').strip()[:60]
+    _application.save_config()
+    return jsonify({'success': True, 'token_set': bool(sp.logs_token), 'site_name': sp.site_name})
 
 
 # --- Athlete/PPL API endpoints ---

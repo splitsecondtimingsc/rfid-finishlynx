@@ -54,5 +54,26 @@ class TestNoAsciiPath(unittest.TestCase):
         self.assertIsNone(decode(""))
 
 
+class TestForeignTags(unittest.TestCase):
+    """Retail item tags (GS1 SGTIN-96 in shoes/clothing) crossed the mat at
+    real meets; the old digit-run fallback made phantom bibs out of them."""
+
+    def test_meet_log_phantoms_are_ignored(self):
+        for epc in ["3035d0d0c41774000098e4a7", "3035d0d0c42511000098bcca", "3035d0d0c4559c578411d9a5",
+                    "30341e8658026c02540c21a9", "30340c33943b6bc5d21dbaa4", "3022c59f1bf1e4333a258e50",
+                    "30340476f40b28d61e71d61d"]:
+            self.assertIsNone(decode(epc), epc)
+
+    def test_gs1_tag_even_with_digits_in_the_last_word(self):
+        self.assertIsNone(decode("3035d0d0c417740000001234"))
+
+    def test_logged_once_per_tag(self):
+        r = RFIDReader(ReaderConfig(), TimingConfig())
+        with self.assertLogs("rfid_finishlynx.rfid_reader", "INFO") as cm:
+            r._extract_bib_from_epc("3035d0d0c41774000098e4a7")
+            r._extract_bib_from_epc("3035d0d0c41774000098e4a7")
+        self.assertEqual(len(cm.output), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

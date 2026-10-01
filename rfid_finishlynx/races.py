@@ -172,6 +172,7 @@ class RaceManager:
         self._fl_untimed: Dict[int, Set[str]] = {}  # race -> bibs FinishLynx lists without a time
         self._fl_decided: Dict[int, Set[str]] = {}  # race -> bibs FinishLynx timed or flagged
         self._fl_timed: Dict[int, Dict[str, dict]] = {}  # race -> bib -> FinishLynx's time + names
+        self._fl_seen: Dict[int, str] = {}        # race -> FinishLynx .lif text last logged
         # Mat-vs-film finish offset learned from FinishLynx's saved .lif
         # files; subtracted from every non-manual finish this manager
         # reports (results, exports) and, via ingest(), sends.
@@ -268,7 +269,7 @@ class RaceManager:
             del self.races[key]
             self.order = [k for k in self.order if k != key]
             self.film.forget_race(key)
-            for d in (self._fl_untimed, self._fl_decided, self._fl_timed):
+            for d in (self._fl_untimed, self._fl_decided, self._fl_timed, self._fl_seen):
                 d.pop(key, None)
             if self.chute_target == key:
                 self.chute_target = None
@@ -307,6 +308,7 @@ class RaceManager:
             self._fl_untimed.clear()
             self._fl_decided.clear()
             self._fl_timed.clear()
+            self._fl_seen.clear()
             self.film.clear()
             self._written.clear()
             self._fl_cache.clear()
@@ -1592,8 +1594,19 @@ class RaceManager:
             self._fl_untimed[race_key] = untimed
             self._fl_decided[race_key] = decided
             self._fl_timed[race_key] = timed
+            seen = self._fl_seen.get(race_key)
+            self._fl_seen[race_key] = fl_text
         if changed:
             self._changed([race_key])
+        if fl_text and fl_text != seen:
+            # FinishLynx saved the event: what it holds against the reader
+            with self._lock:
+                res = self.results(race_key)
+                name = self.races[race_key].name
+            fl_only = sorted(r["bib"] for r in res["finishers"] if r["finish"].get("fl_only"))
+            logger.info(f"FinishLynx saved {self.lif_name(self.races[race_key])} ({name}): "
+                        f"{len(timed)} timed, {len(untimed)} untimed"
+                        + (f"; only in FinishLynx, no reader finish: {', '.join(fl_only)}" if fl_only else ""))
         content = self.lif_content(race_key, fl_text=fl_text)
         with self._lock:
             path = os.path.join(rfid_dir, self.lif_name(self.races[race_key]))

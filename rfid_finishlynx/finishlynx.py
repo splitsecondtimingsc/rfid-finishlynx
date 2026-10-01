@@ -238,8 +238,16 @@ class ScoreboardListener:
         3. Running time packets - may be sent separately
            Running Time: 1:23.456
         """
-        logger.debug(f"Scoreboard: Parsing data ({len(data)} chars)")
-        logger.debug(f"Scoreboard: Raw data: {repr(data[:500])}")
+        # FinishLynx sends its running time ~20 times a second: that alone
+        # was 99% of the log (70k lines an hour, 2026-10-01). Log one of
+        # those a minute; every other packet in full.
+        if "running time" in data[:40].lower():
+            now = time.time()
+            if now - getattr(self, "_rt_logged", 0.0) >= 60.0:
+                self._rt_logged = now
+                logger.debug(f"Scoreboard: running time (1 of these logged a minute): {repr(data[:120])}")
+        else:
+            logger.debug(f"Scoreboard: Raw data: {repr(data[:500])}")
 
         with self._lock:
             old_event = self._event

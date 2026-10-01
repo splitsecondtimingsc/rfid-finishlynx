@@ -39,6 +39,8 @@ if not exist "%PY%" set "PY=%LocalAppData%\Programs\Python\Python312\python.exe"
 if not exist "%PY%" set "PY=python"
 
 :loop
+rem After a self-update: undo it if the new version keeps failing to start.
+if exist "%~dp0boot_guard.py" "%PY%" "%~dp0boot_guard.py"
 "%PY%" -m rfid_finishlynx.main
 echo Console exited - restarting in 5 seconds (Ctrl+C twice to stop)
 timeout /t 5 /nobreak >nul

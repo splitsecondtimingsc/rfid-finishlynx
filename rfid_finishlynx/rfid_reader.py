@@ -1,7 +1,6 @@
 """RFID Reader interface using LLRP protocol for Impinj Speedway R420."""
 
 import logging
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -59,9 +58,9 @@ class RFIDReader:
         """Extract bib number from tag EPC.
 
         Our tags carry the bib as a literal decimal number in the hex: bib 35
-        is EPC ...00000035. That is the first and normal path. Two fallbacks
-        remain for a hex value with A-F in it (read as an integer) and for a
-        digit run anywhere in the EPC.
+        is EPC ...00000035. That is the first and normal path. One fallback
+        remains for a hex value with A-F in it (read as an integer). Retail
+        GS1 tags (shoes, clothing) are recognised and ignored.
 
         There is deliberately NO ASCII decoding here any more. It used to run
         first and, after stripping NUL padding, mistook every 0x30-0x39 byte
@@ -76,6 +75,16 @@ class RFIDReader:
             Bib number as string, or None if unable to extract.
         """
         if not epc_hex:
+            return None
+
+        # A 96-bit GS1 item tag (header 0x30-0x3F: SGTIN-96 and friends) is
+        # the RFID label in someone's shoes or clothing, never a bib chip. The
+        # old "first digit run" fallback turned 3035d0d0c4... into bib 3035:
+        # 12 phantom finishes 2026-09-12..10-01, sent to FinishLynx.
+        if len(epc_hex) == 24 and epc_hex[0] == "3" and epc_hex[1] in "0123456789abcdefABCDEF":
+            if epc_hex not in self._warned_epcs:
+                self._warned_epcs.add(epc_hex)
+                logger.info(f"Ignoring EPC {epc_hex}: a retail/GS1 item tag (shoes, clothing), not a bib chip")
             return None
 
         # Hex digits that are all 0-9 read as the literal decimal bib:
@@ -97,14 +106,8 @@ class RFIDReader:
         except ValueError:
             pass
 
-        # Try finding numeric portion in EPC
-        match = re.search(r"(\d+)", epc_hex)
-        if match:
-            bib = match.group(1).lstrip("0") or "0"
-            if len(bib) <= 5:  # Reasonable bib length
-                logger.debug(f"Bib extraction method=REGEX, EPC={epc_hex}, match={match.group(1)}, bib={bib}")
-                return bib
-
+        # No "digit run anywhere" fallback any more: every read it ever decoded
+        # was a foreign tag (2026-10-01).
         if epc_hex not in self._warned_epcs:
             self._warned_epcs.add(epc_hex)
             logger.warning(f"Could not extract bib from EPC: {epc_hex} (last8={epc_hex[-8:]}, full_len={len(epc_hex)})")

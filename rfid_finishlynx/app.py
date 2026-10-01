@@ -1554,10 +1554,19 @@ class Application:
                 tag.read_id = res.get("read_id")
                 if res.get("state") == "ignored" and str(res.get("reason", "")).startswith("pass "):
                     tag.point = "-"        # a "not a split" crossing (loop course)
-                    logger.info(f"Read {tag.bib} at {tag.reader_id}: {res['reason']}")
                 elif point and point != tag.reader_id:
                     tag.point = point
-                    logger.info(f"Read {tag.bib} at {tag.reader_id} counted as {point} (pass-numbered)")
+                # Where the read went, one line per read: the log alone can
+                # answer "why is bib X not in the pane?" (2026-10-01)
+                race = self.race_manager.races.get(res.get("race"))
+                name = f"'{race.name}'" if race else "no race"
+                state = res.get("state")
+                where = (f"-> {name}" + (f" as {point}" if point and point != tag.reader_id else "")
+                         if state == "assigned" else
+                         f"-> checked in for {name}" if state == "roster" else
+                         f"-> {state}{' (' + name + ')' if race else ''}: {res.get('reason') or 'no reason'}")
+                logger.info(f"Read {tag.bib} at {tag.reader_id}"
+                            f"{' A' + str(tag.antenna) if getattr(tag, 'antenna', 0) else ''} {where}")
                 # Finish-mat reads go to FinishLynx corrected by the film
                 # offset learned this meet (the read log keeps the raw time).
                 corr = float(res.get("finish_offset") or 0.0)
@@ -2079,7 +2088,7 @@ class Application:
                 return
             else:
                 # No .evt loaded at all - pass bib through as fallback
-                logger.info(f"Track: No .evt loaded - passing bib {tag.bib} through unfiltered")
+                logger.debug(f"Track: No .evt loaded - passing bib {tag.bib} through unfiltered")
                 identifier = tag.bib
             athlete = web.get_athlete_info(tag.bib)
 
@@ -4015,6 +4024,12 @@ class Application:
             'logging': {
                 'level': self.config.logging.level,
                 'file': self.config.logging.file,
+            },
+            'support': {
+                'update_repo': self.config.support.update_repo,
+                'logs_repo': self.config.support.logs_repo,
+                'logs_token': self.config.support.logs_token,
+                'site_name': self.config.support.site_name,
             },
             'event_directory': self.config.event_directory,
             'evt_file': self.config.evt_file,

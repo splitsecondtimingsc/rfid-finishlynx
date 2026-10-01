@@ -8,6 +8,7 @@ import shutil
 import signal
 import sys
 import time
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -45,12 +46,30 @@ def setup_logging(config: Config):
     console.setFormatter(fmt)
     root.addHandler(console)
 
-    # File handler at DEBUG level
+    # File handler at DEBUG level; a new file each day, two weeks kept
+    # (rfid_timing.log.2026-10-01 ...). It was one ever-growing file.
     if config.logging.file:
-        fh = logging.FileHandler(config.logging.file)
+        fh = DailyLogFile(config.logging.file)
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(fmt)
         root.addHandler(fh)
+
+
+class DailyLogFile(TimedRotatingFileHandler):
+    """Rotates at midnight. On Windows the rename fails while another
+    program has the file open; then today's file simply continues (and
+    nothing is lost) instead of every later line failing to rotate."""
+
+    def __init__(self, filename: str, keep_days: int = 14):
+        super().__init__(filename, when="midnight", backupCount=keep_days, encoding="utf-8", delay=False)
+
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except OSError:
+            if self.stream is None:
+                self.stream = self._open()
+            self.rolloverAt = self.computeRollover(int(time.time()))
 
 
 def find_config_path(base: Optional[Path] = None) -> Optional[str]:

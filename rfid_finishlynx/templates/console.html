@@ -618,7 +618,98 @@ async function openPop(kind, port, chip) {
   el.hidden = false;
   if (kind === 'stations') renderStations(true);
   placePop();
-  if (kind === 'app') loadSetup();
+  if (kind === 'app') { loadSetup(); updCheck(); }
+}
+
+/* Updates & support (Console chip): updater.py / support.py on the server. */
+function supKeyHtml() {
+  const sp = CFG.support || {};
+  return sp.token_set
+    ? `<span id="sup-key" style="color:var(--ink-3)">Support key set${sp.site_name ? ' · sends as ' + esc(sp.site_name) : ''} ·
+         <a href="#" onclick="event.preventDefault(); document.getElementById('sup-key').outerHTML = supKeyForm()">change</a></span>`
+    : supKeyForm();
+}
+function supKeyForm() {
+  const sp = CFG.support || {};
+  return `<span id="sup-key" style="display:flex;gap:6px;flex-wrap:wrap;flex-basis:100%">
+    <input class="mid" id="sup-token" type="password" placeholder="Support key (github_pat_…)" autocomplete="off" style="flex:1;min-width:180px">
+    <input class="short" id="sup-site" placeholder="Site name" value="${esc(sp.site_name || '')}" style="width:120px">
+    <button class="btn" onclick="supSaveKey()">Save key</button></span>`;
+}
+async function supSaveKey() {
+  const token = gv('sup-token').trim(), site = gv('sup-site').trim();
+  if (!token) { popMsg('Paste the support key first', false); return; }
+  const d = await api('/api/support/settings', { token, site_name: site });
+  if (d && d.success) {
+    CFG.support = Object.assign(CFG.support || {}, { token_set: true, site_name: d.site_name });
+    document.getElementById('sup-key').outerHTML = supKeyHtml();
+    popMsg('Support key saved', true);
+  } else popMsg((d && d.error) || 'could not save', false);
+}
+async function supSend() {
+  const note = gv('sup-note');
+  popMsg('Sending logs…', true);
+  let d;
+  try { d = await api('/api/support/send', { note }); } catch (e) { d = { error: String(e) }; }
+  if (d && d.success) {
+    popMsg(`Logs sent (${Math.round(d.bytes / 1024)} KB) — ${d.path}`, true);
+    const n = document.getElementById('sup-note'); if (n) n.value = '';
+  } else popMsg((d && d.error) || 'sending failed', false);
+}
+let UPD = null;
+async function updCheck() {
+  const line = document.getElementById('upd-line'), btn = document.getElementById('upd-btn'), rb = document.getElementById('upd-rb');
+  if (!line) return;
+  line.textContent = 'Version: checking…';
+  try { UPD = await (await fetch('/api/update/check')).json(); } catch (e) { UPD = { error: String(e) }; }
+  if (!document.getElementById('upd-line')) return;
+  const v = x => x ? `${x.commit}${x.stamp ? ' (' + x.stamp + ')' : ''}` : '—';
+  rb.hidden = !UPD.can_roll_back;
+  if (!UPD.managed) {
+    line.innerHTML = `Version ${esc(v(UPD.local) === '—' ? (STATUS && STATUS.version) || '—' : v(UPD.local))} · <span style="color:var(--ink-3)">${esc(UPD.why || '')}</span>`;
+    btn.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  if (UPD.error) {
+    line.innerHTML = `Version ${esc(v(UPD.local))} · <span style="color:var(--warn)">${esc(UPD.error)}</span>`;
+    btn.textContent = 'Check again'; btn.onclick = updCheck; btn.classList.remove('primary');
+  } else if (UPD.available) {
+    line.innerHTML = `Version ${esc(v(UPD.local))} · <b style="color:var(--good)">update available: ${esc(v(UPD.remote))}</b>`;
+    btn.textContent = 'Update now'; btn.onclick = updApply; btn.classList.add('primary');
+  } else {
+    line.innerHTML = `Version ${esc(v(UPD.local))} · <span style="color:var(--good)">up to date</span>`;
+    btn.textContent = 'Check again'; btn.onclick = updCheck; btn.classList.remove('primary');
+  }
+}
+async function updApply(force) {
+  if (!force && !confirm('Install the update now? The console restarts (about 15 s): reads and the FinishLynx link pause meanwhile.')) return;
+  popMsg('Downloading and installing… (up to a minute)', true);
+  let d;
+  try { d = await api('/api/update/apply', { force: !!force }); } catch (e) { d = { error: String(e) }; }
+  if (d && d.busy) {
+    if (confirm(`Not a good moment: ${d.busy.join('; ')}.\n\nUpdate anyway? The console is down for about 15 s.`)) return updApply(true);
+    popMsg('Update postponed', true);
+    return;
+  }
+  if (!d || !d.success) { popMsg((d && d.error) || 'update failed', false); return; }
+  waitForRestart(`Updated to ${d.to && d.to.commit} — restarting…`);
+}
+async function updRollback() {
+  if (!confirm('Go back to the version before the last update? The console restarts (about 15 s).')) return;
+  const d = await api('/api/update/rollback', {});
+  if (!d || !d.success) { popMsg((d && d.error) || 'roll back failed', false); return; }
+  waitForRestart(`Rolled back to ${d.to} — restarting…`);
+}
+/* The console goes away and the launcher brings it back: reload once it answers. */
+function waitForRestart(msg) {
+  popMsg(msg, true);
+  const t0 = Date.now();
+  setTimeout(async function poll() {
+    try { const r = await fetch('/api/status', { cache: 'no-store' }); if (r.ok) { location.reload(); return; } } catch (e) {}
+    if (Date.now() - t0 < 180000) setTimeout(poll, 2000);
+    else popMsg('The console has not come back after 3 minutes — check its window on the PC.', false);
+  }, 6000);
 }
 
 /* Setup check (Console chip): what a new timing PC still needs, each ✗
@@ -898,8 +989,17 @@ function buildPop() {
         'Is this PC ready for a meet: reader network, antennas and beep, clock drivers, FinishLynx settings (LapTime = Lynx on TCP 5000, scoreboard Example2.lss to 127.0.0.1:5891, input folder = RFID), the folders MeetPro and FinishLynx share, and Wireshark for camera starts. ✓ fine · ✗ fix it (how is written under it) · – does not apply or nothing to judge yet.') +
       popSec('Control',
         `<button class="btn" onclick="popAct(STATUS.running ? '/api/stop' : '/api/start', {}, STATUS.running ? 'Stopped' : 'Started')">${s.running ? 'Stop' : 'Start'} console</button>
-         <button class="btn" onclick="popLogs()">Recent warnings</button>
-         <a class="btn" href="/api/logs/export">Export log</a>`) +
+         <button class="btn" onclick="popLogs()">Recent warnings</button>`) +
+      popSec('Updates &amp; support',
+        `<div id="upd-line" style="flex-basis:100%">Version: checking…</div>
+         <button class="btn" id="upd-btn" onclick="updCheck()">Check for update</button>
+         <button class="btn" id="upd-rb" onclick="updRollback()" hidden>Roll back</button>
+         <span style="flex-basis:100%"></span>
+         <input class="mid" id="sup-note" placeholder="What went wrong? (optional)" style="flex:1;min-width:180px">
+         <button class="btn primary" onclick="supSend()">Send logs</button>
+         <a class="btn" href="/api/logs/export">Export log</a>
+         <span style="flex-basis:100%"></span>${supKeyHtml()}`,
+        'Update installs the newest release from GitHub and restarts the console (about 15 s); it waits while a race is running unless you say so. If the new version will not start, the old one comes back by itself; Roll back does that by hand. Send logs uploads the log, settings (without the support key), race state and a status snapshot for whoever supports this console - add a line about what happened. The support key is the one you were given with the install; it can only write logs, nothing else.') +
       popSec('Reads',
         `<label class="inl">Mode <select id="p-opmode" onchange="setMode(this.value)">
            <option value="finishlynx" ${s.operation_mode !== 'current_reads' ? 'selected' : ''}>FinishLynx (event-aware)</option>
