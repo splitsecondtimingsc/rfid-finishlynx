@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFID Console Quick Start</title>
+<style>
+  :root { --ink: #1c1c1a; --ink-2: #4a4944; --ink-3: #77766e; --line: #dcdad3; --soft: #f4f3ef;
+          --accent: #1f6fd1; --good: #0b8a0b; --bad: #c0392b; --warn: #b7791f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink);
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  .lede { color: var(--ink-2); margin: 0 0 24px; }
+  h2 { font-size: 21px; margin: 40px 0 10px; padding-top: 14px; border-top: 2px solid var(--ink); }
+  h2 .n { color: var(--accent); margin-right: 6px; }
+  h3 { font-size: 16px; margin: 22px 0 6px; }
+  p, li { max-width: 72ch; }
+  ol, ul { padding-left: 22px; } li { margin: 3px 0; }
+  code, kbd, .path { font: 13px/1.4 Consolas, ui-monospace, monospace; background: var(--soft);
+                     border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+  .path { white-space: normal; overflow-wrap: anywhere; }
+  b.ui { font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); }
+  figure { margin: 14px 0 18px; }
+  figure img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; display: block; }
+  figcaption { font-size: 13px; color: var(--ink-3); margin-top: 5px; }
+  .note { background: var(--soft); border-left: 4px solid var(--accent); padding: 10px 14px; margin: 14px 0; border-radius: 0 6px 6px 0; }
+  .warn { border-left-color: var(--warn); }
+  .toc { columns: 2; column-gap: 32px; padding-left: 20px; margin: 0 0 8px; }
+  .toc li { break-inside: avoid; }
+  .check { list-style: none; padding-left: 0; }
+  .check li::before { content: "☐"; margin-right: 8px; color: var(--ink-3); }
+  .ok { color: var(--good); font-weight: 700; } .x { color: var(--bad); font-weight: 700; }
+  @media (max-width: 640px) { .toc { columns: 1; } table { font-size: 13px; } }
+  @media print {
+    main { max-width: none; padding: 0; }
+    h2 { break-before: page; } h2:first-of-type { break-before: auto; }
+    figure, table, .note { break-inside: avoid; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>RFID Timing Console · Quick Start</h1>
+<p class="lede">Set up a Windows timing PC so the RFID mat, the LED clocks, FinishLynx and MeetPro work
+together. Plan on 20 minutes the first time, with FinishLynx and the reader at hand.</p>
+
+<ol class="toc">
+  <li><a href="#need">What you need</a></li>
+  <li><a href="#install">Install</a></li>
+  <li><a href="#network">Network</a></li>
+  <li><a href="#finishlynx">FinishLynx settings</a></li>
+  <li><a href="#meetpro">MeetPro settings</a></li>
+  <li><a href="#check">Check it: Setup check</a></li>
+  <li><a href="#meetday">Meet day</a></li>
+  <li><a href="#trouble">When something is wrong</a></li>
+  <li><a href="#ref">Addresses, ports and folders</a></li>
+</ol>
+
+<h2 id="need"><span class="n">1</span>What you need</h2>
+<ul class="check">
+  <li>A Windows 10 or 11 PC (64-bit) you can log in to as an administrator once.</li>
+  <li><b>FinishLynx</b> with the <b>LapTime plug-in</b> installed on that PC.</li>
+  <li>The <b>Vanch RFID reader</b> (VF-747P or VF-787P) with its antennas, power supply and a network cable
+      into the same switch as the PC and the FinishLynx camera.</li>
+  <li>Optional: the <b>LED clocks</b> on their USB-serial cables (CH340 = LED clock, PL2303 = Electro Numerics).</li>
+  <li>Optional: <b>MeetPro</b>, on this PC or on another laptop that can reach this PC's
+      <span class="path">C:\Finish_Lynx_Results</span> folder over the network.</li>
+  <li>Optional: <b>Wireshark</b> (free), so the console hears the start sensor through the camera.</li>
+  <li>The package: <span class="path">rfid-finishlynx-&lt;date&gt;-&lt;version&gt;.zip</span>.</li>
+</ul>
+
+<h2 id="install"><span class="n">2</span>Install</h2>
+<ol>
+  <li>Unzip the package anywhere (Desktop or a USB stick is fine). Right-click the zip, <b class="ui">Extract All…</b>
+      Do not run it from inside the zip.</li>
+  <li>Open the extracted <span class="path">rfid_finishlynx</span> folder and double-click <b>INSTALL.bat</b>.</li>
+  <li>If Windows says <i>"Windows protected your PC"</i>: click <b class="ui">More info</b>, then
+      <b class="ui">Run anyway</b>. Accept the administrator prompt.</li>
+  <li>The installer works through 9 steps. It needs no internet. Answer its questions:
+    <table>
+      <tr><th>It asks</th><th>Answer</th></tr>
+      <tr><td>Open Network Connections now to set it</td><td>Only shown when the PC is not on the reader's network: <b>Y</b>, then see <a href="#network">Network</a>.</td></tr>
+      <tr><td>Open the Wireshark download page now</td><td><b>Y</b> if you want starts from the camera. Install Wireshark with <b>Npcap</b> ticked. <b>N</b> is fine: you then set guns from the race pane.</td></tr>
+      <tr><td>Change FinishLynx's settings now</td><td><b>Close FinishLynx first</b>, then <b>Y</b>. It sets everything in <a href="#finishlynx">section 4</a> for you and keeps a backup. <b>N</b> if you prefer to set them by hand.</td></tr>
+    </table>
+  </li>
+  <li>At the end the console starts and the browser opens <span class="path">http://localhost:8080</span>.
+      An <b>RFID Console</b> shortcut is on the Desktop, and the console starts by itself every time you log in.</li>
+</ol>
+<div class="note">Installing a newer package later: unzip it and run its INSTALL.bat the same way. Your settings,
+races and results are kept.</div>
+
+<h2 id="network"><span class="n">3</span>Network</h2>
+<p>The reader, the FinishLynx camera and this PC must be on the same wired network,
+<b>192.168.0.x</b>:</p>
+<table>
+  <tr><th>Device</th><th>Address</th></tr>
+  <tr><td>RFID reader (factory setting)</td><td><code>192.168.0.128</code></td></tr>
+  <tr><td>This PC's wired adapter</td><td><code>192.168.0.200</code>, mask <code>255.255.255.0</code>, no gateway</td></tr>
+  <tr><td>FinishLynx camera (typical)</td><td><code>192.168.0.201</code></td></tr>
+</table>
+<p>If your camera network already uses 192.168.0.x, nothing to do. Otherwise set the PC's address: <kbd>Win</kbd>+<kbd>R</kbd>,
+type <code>ncpa.cpl</code>, right-click the wired adapter, <b class="ui">Properties</b> → <b class="ui">Internet Protocol Version 4
+(TCP/IPv4)</b> → <b class="ui">Use the following IP address</b>.</p>
+<p>The console finds the reader by itself, polls <b>every antenna port</b> it has, and turns the reader's
+<b>beep off</b> each time it connects: nothing to set on the reader.</p>
+
+<h2 id="finishlynx"><span class="n">4</span>FinishLynx settings</h2>
+<p><b>Easiest:</b> close FinishLynx and run <span class="path">C:\rfid_finishlynx\deploy\configure-finishlynx.bat</span>
+(the installer offers the same). It shows what is wrong, changes only that, and saves a backup
+<span class="path">Lynx.cfg.before-rfid-&lt;date&gt;</span> next to FinishLynx's settings. Open FinishLynx afterwards and
+check the screens below. To set them by hand:</p>
+
+<p>All three are tabs of one <b>Options</b> dialog. Press <b class="ui">Ok</b> at the end to keep them.</p>
+
+<h3>4a. LapTime: RFID reads into FinishLynx</h3>
+<ol>
+  <li>FinishLynx menu <b class="ui">LapTime → Options…</b> (the LapTime plug-in must be installed).</li>
+  <li><b class="ui">New</b> (or pick the entry you use) and set <b>Device: Lynx</b>. Not IPICO, not BibLynx: those
+      silently ignore the console.</li>
+  <li><b>Serial Port: Network (listen)</b>, <b>Port 5000</b>. Sync. Source: Internal.</li>
+</ol>
+<figure><img src="docs/quickstart/fl-laptime.png" alt="FinishLynx Options, LapTime tab: device Lynx, Network (listen), port 5000">
+  <figcaption>LapTime tab: Device Lynx, Serial Port Network (listen), Port 5000.</figcaption></figure>
+
+<h3>4b. Scoreboard: event, heat and race clock back to the console</h3>
+<ol>
+  <li>Menu <b class="ui">Scoreboard → Options…</b>, <b class="ui">New</b>, Name <b>Middleware</b>.</li>
+  <li><b>Script: Example2.lss</b>. <b>Serial Port: Network (UDP)</b>, <b>Port 5891</b>, <b>IP Address 127.0.0.1</b>.</li>
+  <li><b>Running Time: Normal</b> (this is how the console learns the gun from FinishLynx). Results: Off.</li>
+</ol>
+<figure><img src="docs/quickstart/fl-scoreboard.png" alt="FinishLynx Options, Scoreboard tab: Middleware, Example2.lss, Network (UDP) 127.0.0.1 port 5891">
+  <figcaption>Scoreboard tab: entry "Middleware", Example2.lss, Network (UDP) to 127.0.0.1 port 5891, running time Normal.</figcaption></figure>
+<div class="note">One driver per LED clock. A clock that is also an entry in FinishLynx's own scoreboard list (for example
+"Timing_Clock" on a COM port) is driven by FinishLynx, and the console shows it amber ("port busy"). To have the console
+drive it instead (race time for the RFID races, time of day between), set that entry's Serial Port to &lt;none&gt;.</div>
+
+<h3>4c. Folders</h3>
+<p>Menu <b class="ui">File → Options…</b>:</p>
+<table>
+  <tr><th>Tab · setting</th><th>Folder</th><th>Why</th></tr>
+  <tr><td>Database · <b>Input Directory</b></td><td><span class="path">C:\Finish_Lynx_Results\RFID</span></td><td>MeetPro writes lynx.evt / .ppl / .sch here</td></tr>
+  <tr><td>Database · <b>Output Directory</b></td><td><span class="path">C:\Finish_Lynx_Results</span></td><td>FinishLynx saves its .lif files here (Write LIF File: On)</td></tr>
+  <tr><td>Event · <b>Event Directory</b></td><td><span class="path">C:\Finish_Lynx_Results</span></td><td>same folder</td></tr>
+</table>
+<figure><img src="docs/quickstart/fl-folders.png" alt="FinishLynx Options, Database tab: input and output directories">
+  <figcaption>Database tab: Input Directory = the RFID subfolder, Output Directory = the results folder.</figcaption></figure>
+<div class="note">Why two folders: the console reads FinishLynx's .lif files from <span class="path">C:\Finish_Lynx_Results</span>,
+adds the RFID mile splits, and writes the combined files into <span class="path">RFID</span>, where MeetPro picks them up.
+FinishLynx and the console never write the same file.</div>
+
+<h2 id="meetpro"><span class="n">5</span>MeetPro settings</h2>
+<ol>
+  <li>MeetPro: <b class="ui">Interfaces → F.A.T. → Setup</b>.</li>
+  <li><b>Directory</b> = <span class="path">C:\Finish_Lynx_Results\RFID</span>. From another laptop: the same folder over the
+      network (share the timing PC's <span class="path">C:\Finish_Lynx_Results</span> folder).</li>
+  <li>Leave <i>Don't Write Start Lists</i> unticked. Export start lists as usual; they land in the RFID folder.</li>
+  <li>For splits in MeetPro, use <b>Splits Auto-Pull</b>; for MileSplit Live during the race, <b>Start MS Live Sync</b> on the XC tab.</li>
+</ol>
+<div class="note warn">If the console ever stops mid-meet: point MeetPro's directory back to
+<span class="path">C:\Finish_Lynx_Results</span>. Results keep flowing from FinishLynx; only the mile splits stop.</div>
+
+<h2 id="check"><span class="n">6</span>Check it: Setup check</h2>
+<p>Open the console (<span class="path">http://localhost:8080</span> or the Desktop shortcut) and click the
+<b>Console</b> chip at the top left. Its <b>Setup check</b> lists everything above:
+<span class="ok">✓</span> is fine, <span class="x">✗</span> needs fixing and says how, <b>–</b> does not apply yet
+(for example, no clock plugged in). <b class="ui">Check again</b> after each fix.</p>
+<figure><img src="docs/quickstart/console-setup.png" alt="Console chip open with the Setup check list">
+  <figcaption>A PC that still needs its folders and MeetPro set: each ✗ says what to do.</figcaption></figure>
+<p>Some rows only turn green once things are running: the LapTime link when FinishLynx is open, the scoreboard feed once an
+event is armed, the camera once FinishLynx talks to it.</p>
+
+<h2 id="meetday"><span class="n">7</span>Meet day</h2>
+<figure><img src="docs/quickstart/console-main.png" alt="The console with a race running">
+  <figcaption>Top: status chips. Toolbar: Load meet…, Export meet…, Races from .evt, + New race, Close meet.</figcaption></figure>
+<ol>
+  <li><b>Power up</b> the reader, clocks and FinishLynx. The console starts by itself at login.</li>
+  <li><b class="ui">Load meet…</b> → <b>Load</b>. It reads the athletes MeetPro exported.</li>
+  <li><b class="ui">Races from .evt</b>: tick the races the mat will time, <b class="ui">Add selected</b>.</li>
+  <li>Click <b class="ui">Check-in</b> on the next race.</li>
+  <li><b>The gun</b> arms the race by itself (camera start or FinishLynx's clock). Otherwise open the race's
+      <b class="ui">Gun ▾</b> and pick the start or <b class="ui">Gun = now</b>. The LED clocks follow the running race.</li>
+  <li>Finishers appear as they cross. <b>Needs attention</b> lists anyone missing a mile split:
+      <b class="ui">Estimate</b>, <b class="ui">Add time</b> or <b class="ui">Publish without split</b>.</li>
+  <li><b class="ui">Close race</b> when the last runner is in. The clocks go back to the time of day.</li>
+  <li>After the meet: <b class="ui">Export meet…</b> for a CSV, then <b class="ui">Close meet</b> (archives everything, then
+      clears the console for the next meet).</li>
+</ol>
+<h3>The chips</h3>
+<table>
+  <tr><th>Chip</th><th>Click it for</th></tr>
+  <tr><td><b>Console</b></td><td>Setup check, restart, logs.</td></tr>
+  <tr><td><b>Stations</b></td><td>The reader: <b class="ui">⚙ Reader…</b> for antenna ports and power; where each mat stands (Finish, Mile 1…).</td></tr>
+  <tr><td><b>FinishLynx</b></td><td>LapTime link, scoreboard feed, camera start.</td></tr>
+  <tr><td><b>Clocks</b></td><td>Each LED clock; <b class="ui">Time of day</b>, count-up, 12/24-hour.</td></tr>
+</table>
+<figure><img src="docs/quickstart/console-clocks.png" alt="Clocks chip open">
+  <figcaption>Clocks: what they show and why; Time of day holds until Back to auto, or until you set a race's gun.</figcaption></figure>
+
+<h2 id="trouble"><span class="n">8</span>When something is wrong</h2>
+<table>
+  <tr><th>You see</th><th>Do</th></tr>
+  <tr><td>Stations chip red / "Reader offline"</td><td>Reader power and network cable; PC on 192.168.0.x (<a href="#network">section 3</a>). The console reconnects by itself.</td></tr>
+  <tr><td>Reads in the console, nothing in FinishLynx</td><td>FinishLynx LapTime Device must be <b>Lynx</b> on port 5000; an event armed and started.</td></tr>
+  <tr><td>LED clock dark</td><td>Setup check → clock drivers. If FinishLynx's own scoreboard list has an entry on that clock's COM port, FinishLynx holds the port: remove that entry or pick a different clock.</td></tr>
+  <tr><td>Clock shows the wrong thing</td><td>Clocks chip → <b class="ui">Back to auto</b>.</td></tr>
+  <tr><td>Gun not picked up</td><td>Race <b class="ui">Gun ▾</b> → pick the start or <b class="ui">Gun = now</b>. For camera starts: Wireshark installed, FinishLynx open.</td></tr>
+  <tr><td>MeetPro shows no splits</td><td>MeetPro's F.A.T. directory = the RFID folder (<a href="#meetpro">section 5</a>).</td></tr>
+  <tr><td>Console page does not load</td><td>Double-click the Desktop <b>RFID Console</b> shortcut, then reload the page (F5).</td></tr>
+  <tr><td>After an update, buttons look old</td><td>Reload the page (F5).</td></tr>
+</table>
+
+<h2 id="ref"><span class="n">9</span>Addresses, ports and folders</h2>
+<table>
+  <tr><th>What</th><th>Value</th></tr>
+  <tr><td>Console web page</td><td><code>http://localhost:8080</code></td></tr>
+  <tr><td>FinishLynx LapTime (console → FinishLynx)</td><td>TCP <code>5000</code>, Device Lynx</td></tr>
+  <tr><td>FinishLynx scoreboard (FinishLynx → console)</td><td>UDP <code>127.0.0.1:5891</code>, Example2.lss</td></tr>
+  <tr><td>Reader</td><td><code>192.168.0.128</code> (Modbus TCP 502, UDP 1969)</td></tr>
+  <tr><td>Install folder</td><td><span class="path">C:\rfid_finishlynx</span> (settings: <span class="path">config.yaml</span>, log: <span class="path">rfid_timing.log</span>)</td></tr>
+  <tr><td>FinishLynx results</td><td><span class="path">C:\Finish_Lynx_Results</span></td></tr>
+  <tr><td>MeetPro ↔ console</td><td><span class="path">C:\Finish_Lynx_Results\RFID</span></td></tr>
+  <tr><td>Closed meets (archive)</td><td><span class="path">C:\rfid_finishlynx\closed-meets</span></td></tr>
+</table>
+
+</main>
+</body>
+</html>

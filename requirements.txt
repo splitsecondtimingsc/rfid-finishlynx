@@ -1,0 +1,9 @@
+sllurp>=2.0.0      # LLRP for Impinj readers
+pyserial>=3.5      # Serial/LoRa communication
+pyyaml>=6.0        # Configuration
+flask>=3.0.0       # Web interface
+flask-socketio>=5.3.0  # Real-time updates
+python-socketio>=5.10.0
+gevent>=24.0.0     # Async support for SocketIO
+zeroconf>=0.131.0  # Cross-platform mDNS discovery
+paramiko>=3.4.0    # Cross-platform SSH (for reader configuration)

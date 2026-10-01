@@ -1,0 +1,66 @@
+camera_start:
+  camera_host: 192.168.0.201
+  camera_port: 41925
+  enabled: true
+  interface: auto
+  tshark_path: auto
+display_name: ''
+event_directory: C:\Finish_Lynx_Results
+evt_file: lynx.EVT
+finishlynx:
+  host: 127.0.0.1
+  port: 5000
+  reconnect_delay_sec: 5.0
+  sync_mode: internal
+header_color: ''
+led_clock:
+  clocks: []
+  enabled: true
+  hour_format: '12'
+  port: auto
+  type: auto
+logging:
+  file: rfid_timing.log
+  level: INFO
+lora:
+  announce_interval_sec: 10.0
+  baud: 9600
+  command_timeout_sec: 3.0
+  enabled: false
+  offline_timeout_sec: 35.0
+  port: 192.168.0.60:8886
+  pre_registered_units: []
+  reader_id: LAP1
+  send_interval_sec: 5.0
+mode: finish_line
+races:
+  chute_reader: CHUTE
+  enabled: true
+  finish_readers:
+  - FINISH
+  lif_dir: ''
+  pass_window_sec: 90.0
+  point_distances:
+    S1: 1609.0
+    S2: 3218.0
+  point_labels:
+    S1: Mile 1
+    S2: Mile 2
+  reader_points: {}
+  state_file: races-state.json
+reader:
+  antennas: all
+  beep: false
+  host: 192.168.0.128
+  port: 502
+  power_dbm: 30.0
+  type: vanch
+remote_readers: []
+scoreboard:
+  enabled: true
+  host: 0.0.0.0
+  port: 5891
+timing:
+  dedup_window_sec: 12.0
+  lap_mode: false
+  total_laps: 1

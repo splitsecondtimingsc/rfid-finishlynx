@@ -1,0 +1,121 @@
+FinishLynx RFID Middleware Setup Instructions
+
+This document outlines the necessary configuration for FinishLynx and the RFID middleware to communicate correctly.
+
+---
+
+1.  Middleware config.yaml Settings
+    (File: config.yaml, in the middleware's root directory)
+
+    This section configures how the middleware connects to FinishLynx.
+
+    finishlynx:
+      # Configuration for SENDING RFID tag reads TO FinishLynx LapTime Plugin.
+      # The middleware acts as a CLIENT connecting to the FinishLynx server.
+      host: 127.0.0.1          # IP address of the machine running FinishLynx.
+                               # Use 127.0.0.1 (localhost) if FinishLynx is on the same machine.
+      port: 5000               # Port FinishLynx's LapTime Plugin is configured to LISTEN on.
+                               # (Verify in FinishLynx Options -> LapTime Tab)
+
+    scoreboard:
+      # Configuration for RECEIVING event/heat data FROM FinishLynx via Scoreboard.
+      # The middleware acts as a SERVER, waiting for FinishLynx to connect to it.
+      enabled: true            # Enable/disable the scoreboard listener
+      host: 0.0.0.0            # IP address the middleware will listen on.
+                               # Use 0.0.0.0 to listen on all available network interfaces.
+      port: 5891               # Port the middleware's Scoreboard listener is listening on.
+                               # FinishLynx will be configured to CONNECT to this port.
+
+---
+
+2.  FinishLynx Software Settings
+
+    You need to configure two separate areas within FinishLynx.
+
+    2.1. Receiving RFID Reads FROM the Middleware (LapTime Input Plugin)
+
+    This configures FinishLynx to act as a SERVER and listen for RFID tag reads
+    (bibs and times) sent from your middleware.
+
+    Steps:
+    a. Open FinishLynx.
+    b. Go to "File" -> "Options...".
+    c. In the Options window, select the "LapTime" tab from the list on the left.
+    d. Configure the following:
+        *   Enabled: Check this box.
+        *   Port: 5000  (This port number MUST match the 'port' under the 'finishlynx'
+            section of your middleware's config.yaml. This is FinishLynx's listening port.)
+        *   Other settings (e.g., Start Mode, Always On): Can usually be left at defaults.
+
+    2.2. Sending Event/Heat Information TO the Middleware (Scoreboard Output)
+
+    This configures FinishLynx to send event/heat information to the middleware
+    via the Scoreboard feature using UDP.
+
+    Steps:
+    a. Open FinishLynx.
+    b. Go to "Scoreboard" -> "Options..." in the menu.
+    c. Click "New" to create a new scoreboard configuration (or edit an existing one).
+    d. Configure the following:
+        *   Name: "RFID Middleware" (or any descriptive name)
+        *   Script: Select "Example" or "Example2" script
+        *   Code Set: Single Byte
+        *   Serial Port: Select "Network (UDP)" from the dropdown
+        *   IP Address: 127.0.0.1  (The IP of the machine running the middleware)
+                        If middleware is on a different computer, use that computer's IP.
+        *   Port: 5891  (The port the middleware's Scoreboard listener is listening on,
+                        as configured in config.yaml under 'scoreboard')
+        *   Running Time: Normal (or Off if you don't need it)
+        *   Results: Auto  (sends results automatically)
+    e. Click "OK" to save.
+    f. Make sure the scoreboard is enabled (checkbox in Scoreboard Options window).
+
+    Note: The middleware uses UDP (not TCP) to receive scoreboard data. FinishLynx
+    will show "Connected" status when using "Network (UDP)" mode.
+
+---
+
+Summary of Matching Ports:
+
+*   `config.yaml -> finishlynx.port`  =  FinishLynx Options -> LapTime -> Port (e.g., 5000)
+*   `config.yaml -> scoreboard.port` = FinishLynx Scoreboard -> Options -> Port (e.g., 5891)
+
+Make sure these port numbers are consistent across both configurations.
+
+---
+
+Connection Architecture:
+
+                        RFID Middleware                    FinishLynx
+                      +-----------------+                +------------------+
+                      |                 |                |                  |
+    RFID tag reads -> |  Sends splits   | ----TCP----> |  LapTime Plugin   |
+                      |  (TCP Client)   |  to port 5000 |  (TCP Server)     |
+                      |                 |                |                  |
+                      |  Scoreboard     | <---UDP----- |  Scoreboard       |
+                      |  Listener       |  broadcasts   |  (Network UDP)    |
+    Event/Heat info <-|  (UDP :5891)    |  to port 5891 |                  |
+                      +-----------------+                +------------------+
+
+The middleware:
+- SENDS RFID times TO FinishLynx via TCP (middleware is TCP client, FinishLynx is server)
+- RECEIVES event/heat data FROM FinishLynx via UDP (middleware listens, FinishLynx broadcasts)
+
+---
+
+Troubleshooting:
+
+1. "Connection refused" when middleware tries to send times:
+   - Ensure FinishLynx is running
+   - Verify LapTime plugin is enabled in FinishLynx Options
+   - Check that the port numbers match
+
+2. "No event/heat data" - middleware not receiving scoreboard data:
+   - Verify scoreboard is configured in FinishLynx with "Network (Connect)"
+   - Ensure the IP address points to the middleware computer
+   - Check that the port matches the scoreboard.port in config.yaml
+   - Verify no firewall is blocking the connection
+
+3. Firewall issues:
+   - The middleware needs to accept incoming connections on the scoreboard port (5891)
+   - Allow outgoing connections to FinishLynx on the LapTime port (5000)

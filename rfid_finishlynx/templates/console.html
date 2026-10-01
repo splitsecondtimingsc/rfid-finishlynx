@@ -1,0 +1,2756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFID Timing Console</title>
+<script src="/static/socket.io.min.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #242422;
+    --border: #383835; --ink: #fff; --ink-2: #c3c2b7; --ink-3: #8a897f;
+    --girls: #d55181; --boys: #3987e5;
+    --good: #0ca30c; --warn: #fab219; --crit: #d03b3b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 20px;
+            border-bottom: 1px solid var(--border); background: var(--surface); flex-wrap: wrap; }
+  .topbar h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 600; }
+  .topbar a { color: var(--ink-3); font-size: 12px; text-decoration: none; }
+  .spacer { flex: 1; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+          border-radius: 999px; font-size: 12px; background: var(--surface-2);
+          border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--ink-3); }
+  .dot.good { background: var(--good); } .dot.warn { background: var(--warn); }
+  .dot.crit { background: var(--crit); }
+  .chip.click { cursor: pointer; user-select: none; }
+  .chip.click:hover, .chip.click.open { border-color: var(--ink-3); color: var(--ink); }
+
+  /* chip popover: device details + quick controls */
+  .pop { position: absolute; z-index: 60; width: 380px; max-width: calc(100vw - 24px);
+         max-height: calc(100vh - 90px); overflow-y: auto;
+         background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+         box-shadow: 0 12px 30px rgba(0,0,0,.55); font-size: 12.5px; color: var(--ink-2); }
+  .pop h3 { margin: 0; padding: 10px 14px; font-size: 13.5px; color: var(--ink);
+            border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .pop h3 .x { margin-left: auto; cursor: pointer; color: var(--ink-3); font-size: 16px; line-height: 1; }
+  .pop .rows { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; padding: 10px 14px; }
+  .pop .rows[hidden], .pop .hint[hidden] { display: none; }   /* display:grid would otherwise beat hidden */
+  .pop .rows .k { color: var(--ink-3); }
+  .pop .rows .v { color: var(--ink); overflow-wrap: anywhere; }
+  .pop .rows .h { grid-column: 1 / -1; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+                  color: var(--ink-3); margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
+  .pop .sec { padding: 8px 14px 10px; border-top: 1px solid var(--border); }
+  .pop .sec .t { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+                 color: var(--ink-3); margin-bottom: 6px; }
+  .pop .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .pop .acts .btn { font-size: 12px; padding: 4px 9px; }
+  .pop .btn.danger { border-color: var(--crit); color: var(--crit); background: none; }
+  .pop input, .pop select { padding: 4px 8px; font-size: 12.5px; background: var(--surface);
+    color: var(--ink); border: 1px solid var(--border); border-radius: 6px; }
+  .pop input.short { width: 84px; } .pop input.mid { width: 150px; }
+  .pop label.inl { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-2); }
+  .pop .msg { padding: 6px 14px 10px; font-size: 12px; min-height: 14px; }
+  .pop .msg.ok { color: var(--good); } .pop .msg.bad { color: var(--crit); }
+  .pop .hint { font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
+  .pop .trouble { font-size: 11.5px; color: var(--warn); margin-top: 6px; }
+  .pop.wide { width: 470px; }
+  /* Setup check rows (Console chip) */
+  .pop .setup { width: 100%; }
+  .pop .setup .g { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 8px 0 2px; }
+  .pop .setup .g:first-child { margin-top: 0; }
+  .pop .setup .r { display: flex; gap: 8px; padding: 3px 0; color: var(--ink); }
+  .pop .setup .m { flex: 0 0 14px; font-weight: 700; text-align: center; }
+  .pop .setup .m.ok { color: var(--good); } .pop .setup .m.bad { color: var(--crit); } .pop .setup .m.na { color: var(--ink-3); }
+  .pop .setup .d { font-size: 11.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+  .pop .setup .f { font-size: 11.5px; color: var(--warn); }
+  .pop .more { padding: 0 14px 8px; }
+  .pop .more button { background: none; border: 0; color: var(--boys); font: inherit; font-size: 12px; cursor: pointer; padding: 0; }
+  /* (i) beside a section title: shows that section's setup notes */
+  .ibtn { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%;
+          border: 1px solid var(--ink-3); color: var(--ink-3); font: italic 700 10px Georgia, serif; cursor: pointer;
+          background: none; padding: 0; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+  .ibtn:hover, .ibtn.on { color: var(--ink); border-color: var(--ink); }
+  .pop .logs { max-height: 150px; overflow-y: auto; font: 11px/1.4 ui-monospace, Consolas, monospace;
+               background: var(--page); border-radius: 6px; padding: 6px 8px; margin-top: 6px; white-space: pre-wrap; }
+
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 20px;
+             border-bottom: 1px solid var(--border); flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); }
+  .toolbar input, .toolbar select { padding: 5px 9px; font-size: 12.5px; background: var(--surface);
+    color: var(--ink); border: 1px solid var(--border); border-radius: 7px; }
+
+  .btn { font-size: 12.5px; padding: 6px 12px; border-radius: 7px; cursor: pointer;
+         background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); }
+  .btn.primary { background: var(--boys); border-color: var(--boys); color: #0d0d0d; font-weight: 600; }
+  .btn.go { background: var(--good); border-color: var(--good); color: #0d0d0d; font-weight: 600; }
+  .btn.stop { background: none; border-color: var(--crit); color: var(--crit); font-weight: 600; }
+  .btn.small { font-size: 11px; padding: 1px 7px; border-radius: 5px; color: var(--ink-3); background: none; }
+
+  .layout { display: grid; grid-template-columns: 1fr 340px; gap: 14px; padding: 16px 20px 40px; align-items: start; }
+  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+  .side { display: grid; gap: 14px; position: sticky; top: 12px; }
+  .vsep { border-left: 1px solid var(--border); height: 18px; }
+
+  .pane { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  /* a racing pane stands out; a new read for it gives the pane a soft flash */
+  .pane.racing { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn) inset, 0 0 14px rgba(255, 176, 32, 0.25); }
+  .pane.racing .pane-head { background: rgba(255, 176, 32, 0.08); }
+  .pane.flash { animation: pane-flash 0.9s ease-out 1; }
+  @keyframes pane-flash { 0% { background: rgba(255, 176, 32, 0.28); } 100% { background: var(--surface); } }
+  .pane-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+               border-bottom: 1px solid var(--border); }
+  .pane-head h2 { font-size: 14px; margin: 0; font-weight: 600; }
+  .pane-head .sub { font-size: 11.5px; color: var(--ink-3); }
+  .g { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; color: #0d0d0d; }
+  .g.F { background: var(--girls); } .g.M { background: var(--boys); } .g.U { background: var(--ink-3); }
+  .g.X { background: linear-gradient(90deg, var(--girls), var(--boys)); }
+  .badge { margin-left: auto; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+           padding: 3px 8px; border-radius: 5px; white-space: nowrap; }
+  .badge.racing  { color: var(--warn); border: 1px solid var(--warn); }
+  .badge.final   { color: var(--good); border: 1px solid var(--good); }
+  .badge.checkin { color: var(--boys); border: 1px solid var(--boys); }
+  .badge.pending { color: var(--ink-3); border: 1px solid var(--border); }
+  .badge.held    { color: var(--warn); border: 1px solid var(--warn); }
+  .gunrow { display: flex; justify-content: space-between; align-items: baseline;
+            padding: 8px 14px; font-size: 12.5px; color: var(--ink-2); border-bottom: 1px solid var(--border); }
+  .gunrow .clock { font-size: 17px; font-weight: 600; color: var(--ink); }
+  /* one summary line under the gun row: finished / on course / no-show / top team */
+  .summ { display: flex; gap: 18px; padding: 7px 14px; border-bottom: 1px solid var(--border); font-size: 12px;
+          color: var(--ink-3); align-items: center; flex-wrap: wrap; }
+  .summ .n { font-size: 17px; font-weight: 650; color: var(--ink); }
+  .summ .team { color: var(--ink-2); }
+  .pane.big .summ .n { font-size: 22px; }
+  .pane.big .gunrow .clock { font-size: 26px; }
+  .pane.big .scroll { max-height: 560px; }
+  .pane.big table { font-size: 13.5px; }
+  /* sort arrows beside a count (finished: by time, top team: by team) */
+  .sort { display: inline-flex; flex-direction: column; gap: 1px; vertical-align: middle; }
+  .sort b { font-size: 9px; line-height: 9px; color: var(--ink-3); cursor: pointer; padding: 0 3px; border-radius: 3px; font-weight: 400; }
+  .sort b:hover { color: var(--ink); background: var(--surface-2); }
+  .sort b.on { color: var(--boys); font-weight: 700; }
+  /* pane layout by status: active races big, upcoming as cards, finished as strips */
+  .panes { display: grid; gap: 12px; }
+  .grid-active { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); align-items: start; }
+  .grid-cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); }
+  .ccard { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--surface);
+           border: 1px solid var(--border); border-radius: 10px; font-size: 12.5px; cursor: pointer; }
+  .ccard:hover, .strip:hover { border-color: var(--ink-3); }
+  .ccard.checkin { border-color: rgba(57, 135, 229, .55); }
+  .ccard h2 { font-size: 13.5px; margin: 0; font-weight: 600; }
+  .ccard .btn, .strip .btn { font-size: 11.5px; padding: 3px 8px; }
+  .strip { display: flex; align-items: center; gap: 14px; padding: 8px 14px; background: var(--surface);
+           border: 1px solid var(--border); border-radius: 10px; cursor: pointer; font-size: 12.5px; color: var(--ink-2); flex-wrap: wrap; }
+  .strip h2 { font-size: 13.5px; margin: 0; font-weight: 600; color: var(--ink); }
+  .strip .chev { color: var(--ink-3); }
+  .strip .acts { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .strip.heldon { border-color: var(--warn); background: rgba(255, 176, 32, 0.06); }
+  /* expand/collapse morph (2026-09-27): the old box flies to the race's new spot */
+  /* an opened race folds from a click anywhere on its header, as a card or strip opens (2026-09-27) */
+  .pane-head.fold { cursor: pointer; }
+  .pane-head.fold:hover { background: var(--surface-2); }
+  .pane-ghost { position: absolute; z-index: 60; overflow: hidden; pointer-events: none; box-sizing: border-box;
+                background: var(--surface); border: 1px solid var(--ink-3); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .55); }
+  .pane-ghost > * { border: 0 !important; box-shadow: none !important; }
+  .landed { animation: pane-landed 1.2s ease-out 1; }
+  @keyframes pane-landed { 0% { box-shadow: 0 0 0 2px var(--boys); } 100% { box-shadow: 0 0 0 2px transparent; } }
+  .countdown { display: flex; align-items: center; gap: 10px; padding: 6px 14px; font-size: 12px; color: var(--good);
+               background: rgba(12, 163, 12, .08); border-bottom: 1px solid var(--border); }
+  .countdown .btn { font-size: 11px; padding: 2px 8px; }
+  .btn.small.on { color: var(--boys); border-color: var(--boys); }
+  tr.newest td { background: rgba(12, 163, 12, 0.14); }
+  tr.notseen td { color: var(--ink-3); }             /* checked in, not read yet */
+  /* finish FinishLynx has no time for: the timer decides (Save to .lif) */
+  .btn.lifsave { font-size: 11.5px; padding: 1px 8px; border-color: var(--warn); color: var(--warn);
+                 background: rgba(250, 178, 25, .1); animation: lifpulse 1.4s ease-in-out infinite; }
+  @keyframes lifpulse { 50% { background: rgba(250, 178, 25, .35); } }
+  @media (prefers-reduced-motion: reduce) { .btn.lifsave { animation: none; } }
+  /* floating menu (pane More ▾): lives outside the panes so a re-render never closes it */
+  .menu { position: absolute; z-index: 70; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+          box-shadow: 0 10px 24px rgba(0,0,0,.55); padding: 4px; min-width: 190px; }
+  .menu button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--ink);
+                 padding: 6px 10px; border-radius: 5px; font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+  .menu button:hover { background: var(--surface); }
+  .menu button.danger { color: var(--crit); }
+  .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
+  /* Stations chip: one short code + dot per station in use (fades green -> red as it drops) */
+  .sta { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); font-weight: 600; }
+  .sta .dot { transition: background .9s linear; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--ink-3); font-weight: 600; padding: 6px 8px 4px; }
+  td { padding: 5px 8px; border-top: 1px solid #232321; color: var(--ink-2); }
+  td.bib { color: var(--ink); font-weight: 650; }
+  td.right, th.right { text-align: right; }
+  .pt { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+        border: 1px solid var(--border); color: var(--ink-2); }
+  .pt.fin { border-color: var(--good); color: var(--good); }
+  .flag { font-size: 10px; color: var(--warn); }
+  /* missing-split review: finishers lacking an expected split */
+  tr.review td { background: rgba(255, 176, 32, 0.08); }
+  .flag.miss { cursor: pointer; border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; }
+  .flag.miss:hover { background: var(--warn); color: #000; }
+  /* Needs attention: finishers missing a split, at the top of the pane */
+  .attention { margin: 6px 14px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 8px;
+               background: rgba(255, 176, 32, 0.08); font-size: 12px; }
+  .attention h4 { margin: 0 0 4px; font-size: 12px; color: var(--warn); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .attention .hint { font-weight: normal; color: var(--ink-3); font-size: 11px; }
+  .attention .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0; border-top: 1px solid var(--border); }
+  .attention .row:first-child { border-top: 0; }
+  .attention .btn { font-size: 11px; padding: 2px 7px; }
+  /* Publishing switch (Stations panel) */
+  .switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11.5px; color: var(--ink-2); user-select: none; }
+  .switch input { display: none; }
+  .switch .track { width: 34px; height: 18px; border-radius: 9px; background: var(--crit); position: relative; transition: background .15s; }
+  .switch .track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .switch input:checked + .track { background: var(--good); }
+  .switch input:checked + .track::after { left: 18px; }
+  .switch .v { font-weight: 700; min-width: 26px; }
+  .pane-foot { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); flex-wrap: nowrap; overflow-x: auto; }
+  /* compact so the row of actions stays on one line at pane width */
+  .pane-foot .btn { font-size: 11.5px; padding: 4px 8px; white-space: nowrap; flex: 0 0 auto; }
+  .note { padding: 8px 14px; font-size: 11.5px; color: var(--ink-3); }
+  #units td { vertical-align: middle; white-space: nowrap; }
+  #units td.loc { width: 50%; }
+  #units select, #units-foot input { padding: 3px 6px; font-size: 12px; background: var(--surface);
+    color: var(--ink); border: 1px solid var(--border); border-radius: 6px; }
+  #units select { width: 100%; }
+  #units select.finish { color: var(--good); font-weight: 600; }
+  /* a real button, not a caption: it opens the reader's settings (2026-09-30) */
+  #units .btn.rdr { font-size: 11px; padding: 1px 8px; margin-left: 6px; border-radius: 5px;
+                    background: var(--surface-2); color: var(--ink); border: 1px solid var(--ink-3); }
+  #units .btn.rdr:hover { background: var(--border); border-color: var(--ink-2); }
+  #units-foot input { width: 52px; text-align: right; }
+  #units-foot .msg-ok { color: var(--good); } #units-foot .msg-bad { color: var(--crit); }
+  .reason { font-size: 10.5px; color: var(--warn); }
+  .teams { padding: 4px 0 8px; }
+  .scroll { max-height: 340px; overflow-y: auto; }
+  /* alarm strip: the finish reader (or the split-station link) is down while a race runs */
+  .alarm { grid-column: 1 / -1; margin: 0; padding: 10px 16px; border-radius: 10px; font-weight: 700; font-size: 15px;
+           display: flex; flex-direction: column; gap: 4px; }
+  .alarm[hidden] { display: none; }   /* display:flex would otherwise beat the hidden attribute */
+  .alarm.crit { background: var(--crit); color: #fff; animation: alarm-pulse 1s ease-in-out infinite; }
+  .alarm.warn { background: var(--warn); color: #000; }
+  .alarm .sub { font-weight: 500; font-size: 12.5px; opacity: .9; }
+  @keyframes alarm-pulse { 50% { opacity: .55; } }
+  .outage { font-size: 11.5px; color: var(--crit); padding: 2px 14px 6px; }
+  td.split { white-space: nowrap; }
+  td.split .miss { color: var(--warn); cursor: pointer; }
+  .feed { max-height: calc(100vh - 190px); overflow-y: auto; }
+
+  dialog { background: var(--surface-2); color: var(--ink); border: 1px solid var(--boys);
+           border-radius: 12px; padding: 0; min-width: 340px; }
+  dialog::backdrop { background: rgba(0,0,0,.55); }
+  dialog h3 { margin: 0; padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--border); }
+  dialog .body { padding: 12px 16px; font-size: 12.5px; color: var(--ink-2); }
+  dialog .foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 16px;
+                 border-top: 1px solid var(--border); }
+  dialog label { display: block; margin: 8px 0 3px; color: var(--ink-3); font-size: 11.5px; }
+  dialog input[type=checkbox] { width: auto; margin: 0; cursor: pointer; }
+  dialog input, dialog select { width: 100%; padding: 7px 10px; font-size: 13px;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 7px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>RFID Timing Console</h1>
+  <span class="chip click" data-pop="app" id="chip-app" onclick="togglePop(this)"><span class="dot" id="st-app"></span> <span id="st-app-t">Console</span></span>
+  <span class="chip click" data-pop="stations" id="chip-st" onclick="togglePop(this)"><span id="st-st">Stations</span></span>
+  <span class="chip click" data-pop="fl" id="chip-fl" onclick="togglePop(this)"><span class="dot" id="st-fl"></span> <span id="st-fl-t">FinishLynx</span></span>
+  <span class="chip click" data-pop="clocks" id="chip-clocks" onclick="togglePop(this)" hidden><span class="dot" id="st-clocks"></span> <span id="st-clocks-t">Clocks</span></span>
+  <div class="spacer"></div>
+  <label class="switch" id="pub-switch" title="ON: finish reads go to FinishLynx and the merged .lif files are written for MeetPro. OFF: reads are still heard, shown and backed up here, but nothing goes out — for warm-ups, tag checks or a test start. Always ON after a restart.">
+    <span class="k">Publishing</span><input type="checkbox" id="pub-on" checked onchange="setPublishing(this.checked)"><span class="track"></span><span class="v" id="pub-v">ON</span></label>
+  <button class="btn go" id="btn-start" onclick="startStop()">Start</button>
+  <a href="/classic">legacy console</a>
+</div>
+
+<div id="preview-strip" class="alarm warn" style="border-radius:0;margin:0" hidden></div>
+
+<div class="toolbar">
+  <span id="meet-label" title="No meet folder loaded">Meet: <b id="meet-name">none loaded</b> <span id="meet-status" class="num" style="color:var(--ink-3)"></span></span>
+  <button class="btn" onclick="openLoadMeet()" title="Load (or reload) a Lynx meet folder: lynx.ppl athletes + lynx.evt races">Load meet…</button>
+  <span class="vsep"></span>
+  <button class="btn" onclick="quickBib()">Quick bib &rarr; FinishLynx</button>
+  <div class="spacer"></div>
+  <button class="btn" onclick="exportMeet()" title="Every race's results and team scores in one CSV — you pick where it goes">Export meet…</button>
+  <button class="btn" id="btn-evt" onclick="openFromEvt()" title="Pick which races from the meet folder's lynx.evt to time">Races from .evt</button>
+  <button class="btn primary" onclick="openCreate()">+ New race</button>
+  <button class="btn stop" onclick="openCloseMeet()" title="Archive results, then clear every race pane and read">Close meet</button>
+</div>
+
+<div class="layout">
+  <div id="alarm" class="alarm" hidden></div>
+  <div class="panes" id="panes"></div>
+  <div class="side">
+    <div class="pane">
+      <div class="pane-head"><h2>Live reads</h2>
+        <span class="badge pending" id="feed-count">0</span></div>
+      <div class="feed"><table id="feed"><tr><th>Bib</th><th>Athlete</th><th>Pt</th><th class="right">Clock</th></tr></table></div>
+    </div>
+  </div>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="pop" class="pop" hidden></div>
+<div id="menu" class="menu" hidden></div>
+
+<script>
+let DATA = null, STATUS = null, FEEDN = 0;
+
+function fmtElapsed(sec) {
+  if (sec == null) return '—';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const ss = s.toFixed(1).padStart(4, '0');
+  return h ? `${h}:${String(m).padStart(2,'0')}:${ss}` : `${m}:${ss}`;
+}
+function fmtClock(iso) { return iso ? iso.slice(11, 23) : '—'; }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function api(path, body) {
+  const r = await fetch(path, { method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {}) });
+  const d = await r.json();
+  if (!r.ok) alert(d.error || 'request failed');
+  refresh();
+  return d;
+}
+
+async function refresh() {
+  const d = await (await fetch('/api/races')).json();
+  noteNewReads(d);
+  DATA = d;
+  render();
+  renderStations();
+  renderEvtSync();
+}
+
+/* ---------------------------- system status ---------------------------- */
+
+function dot(id, ok, warn) {
+  const el = document.getElementById(id);
+  el.className = 'dot ' + (ok ? 'good' : warn ? 'warn' : 'crit');
+}
+
+async function pollStatus() {
+  try { STATUS = await (await fetch('/api/status')).json(); } catch (e) { return; }
+  applyStatus(STATUS);
+}
+
+function applyStatus(s) {
+  // Preview instance (hw_guard.py): the web UI of a copy that may not touch
+  // any hardware. Say so loudly so nobody times a race from it.
+  const ps = document.getElementById('preview-strip');
+  ps.hidden = !s.preview;
+  if (s.preview) ps.innerHTML = `PREVIEW ONLY — this console is not connected to the reader, clocks, radio, camera or FinishLynx. <span class="sub">${esc(s.preview_reason || '')}. The live console is unaffected; nothing you do here reaches the track.</span>`;
+  // Console chip: just "Console" while running; says so when it is not
+  dot('st-app', s.running, true);
+  document.getElementById('st-app-t').textContent = s.preview ? 'Console · preview' : s.running ? 'Console' : 'Console · stopped';
+  renderStations();
+  applyPublishing(s);
+  renderFlChip(s);
+  renderClocksChip(s);
+  renderStationsChip();
+  const b = document.getElementById('btn-start');
+  b.textContent = s.running ? 'Stop' : 'Start';
+  b.className = 'btn ' + (s.running ? 'stop' : 'go');
+  renderAlarm(s);
+  livePop();
+}
+
+/* Loud, unmissable strip above the panes while a race is running and
+   something that records it is down: whichever reader is the finish line
+   (critical - every finish in that window is lost; the local mat unless a
+   station has been made the finish), the split-station radio link, or a
+   station that has gone silent. A short beep on the first appearance. */
+let ALARM_KEY = '';
+function renderAlarm(s) {
+  const el = document.getElementById('alarm');
+  const racing = DATA && DATA.enabled ? DATA.order.map(k => DATA.races[String(k)]).filter(r => r.status === 'racing') : [];
+  const names = racing.map(r => r.name).join(', ');
+  const localFinish = readerIsFinish(LOCAL_READER);
+  const finishStations = (UNITS || []).filter(u => readerIsFinish(u.reader_id)).map(u => u.reader_id);
+  let cls = '', lines = [];
+  const rank = c => { if (c === 'crit' || !cls) cls = c; };
+  if (s.running && racing.length && !s.reader_connected && !readerOff(LOCAL_READER)) {
+    const since = s.reader_down_since ? fmtClock(s.reader_down_since) : '';
+    const secs = s.reader_down_since ? Math.round((Date.now() - new Date(s.reader_down_since)) / 1000) : null;
+    // ...and where that falls in each running race (its own gun)
+    const at = s.reader_down_since ? racing.filter(r => r.gun).map(r =>
+      `${esc(r.name)} ${fmtRace(Math.max(0, (new Date(s.reader_down_since) - new Date(r.gun)) / 1000))}–${fmtRace(Math.max(0, (Date.now() - new Date(r.gun)) / 1000))}`).join(', ') : '';
+    const when = `${since ? ` since ${since}` : ''}${secs != null ? ` (${secs} s)` : ''}${at ? ` — race time ${at}` : ''}`;
+    if (localFinish) {
+      rank('crit');
+      lines.push(`⚠ FINISH READER OFFLINE${when} — ${esc(names)} racing: finishes are NOT being recorded`);
+    } else {
+      rank('warn');
+      lines.push(`⚠ Reader offline (counts as ${esc(unitRoleText(LOCAL_READER))})${when} — ${esc(names)} racing: those reads are not being recorded`);
+    }
+    lines.push(`<span class="sub">Check the reader's power and network cable (${esc(CFG.reader ? CFG.reader.host : '')}). The console reconnects by itself; hand-time anyone who crosses now.</span>`);
+  }
+  if (s.running && racing.length && s.lora_enabled && !s.lora_connected) {
+    if (finishStations.length) {
+      rank('crit');
+      lines.push(`⚠ RADIO LINK DOWN and station ${finishStations.map(esc).join(', ')} is the FINISH LINE — ${esc(names)} racing: finishes are NOT arriving (the station keeps them and resends when the link is back)`);
+    } else if (s.lora_ever_connected) {
+      // a gateway that never answered since the console started is not in
+      // use at this meet, not an outage (2026-09-30)
+      rank('warn');
+      lines.push(`⚠ Split-station radio link down — ${esc(names)} racing: split reads are not arriving (stations keep them and resend when the link is back)`);
+    }
+  }
+  const silent = (UNITS || []).filter(u => u.last_seen && (Date.now() - new Date(u.last_seen)) / 1000 > 40 && !readerOff(u.reader_id));
+  if (s.running && racing.length && s.lora_connected && silent.length) {
+    const silentFinish = silent.filter(u => readerIsFinish(u.reader_id));
+    const secs = Math.round((Date.now() - new Date(silent[0].last_seen)) / 1000);
+    if (silentFinish.length) {
+      rank('crit');
+      lines.push(`⚠ FINISH STATION ${silentFinish.map(u => esc(u.reader_id)).join(', ')} SILENT for ${secs} s — ${esc(names)} racing: finishes are NOT arriving (it resends when heard again)`);
+    } else {
+      rank('warn');
+      lines.push(`⚠ Station ${silent.map(u => esc(u.reader_id)).join(', ')} silent for ${secs} s while ${esc(names)} racing`);
+    }
+  }
+  if (s.running && racing.length && !localFinish && !finishStations.length) {
+    rank('warn');
+    lines.push(`⚠ No station is at the finish line — ${esc(names)} racing: nothing will be placed. Set a station's Location to Finish in the Stations chip.`);
+  }
+  if (s.publishing === false) {
+    // racing while off = finishes are not reaching FinishLynx: shout
+    rank(racing.length ? 'crit' : 'warn');
+    const since = s.publish_off_since ? ` since ${fmtClock(s.publish_off_since)}` : '';
+    const kept = s.publish_kept_back ? ` — ${s.publish_kept_back} read${s.publish_kept_back > 1 ? 's' : ''} kept back` : '';
+    lines.push(`⚠ PUBLISHING OFF${since}${racing.length ? ` while ${esc(names)} racing` : ''}: nothing is going to FinishLynx or the MeetPro .lif files${kept}. <span class="sub">Switch it on in the top bar. Reads are still recorded here${s.read_backup ? ` and in ${esc(s.read_backup)}` : ''}.</span>`);
+  }
+  el.hidden = !lines.length;
+  el.className = 'alarm ' + cls;
+  el.innerHTML = lines.map(l => `<div>${l}</div>`).join('');   // one block per line: two warnings never run together
+  const key = lines.length ? cls + lines[0].slice(0, 40) : '';
+  if (key && key !== ALARM_KEY && cls === 'crit') beep();
+  ALARM_KEY = key;
+}
+/* FinishLynx chip: one dot for the three FinishLynx-side links (LapTime
+   socket, scoreboard feed, camera start sniffer). Green = all up, amber = the
+   LapTime link is up but the feed or the camera is not (or the console is
+   stopped), red = LapTime down while running. The text carries the armed
+   event and FinishLynx's running clock, proof the scoreboard packets arrive. */
+function renderFlChip(s) {
+  const cs = s.camera_start || {}, camOn = !!s.camera_start_enabled;
+  // a camera never heard since the console started (no Wireshark, no
+  // camera at this meet) is not in use, not down - same rule as the radio
+  // and the clocks (2026-09-30); the Setup check still lists it
+  const sbOk = !!s.scoreboard_connected, camOk = !camOn || !!cs.receiving || !cs.replies;
+  dot('st-fl', s.finishlynx_connected && sbOk && camOk, s.finishlynx_connected || !s.running);
+  // green: the armed event and FinishLynx's clock; otherwise what is wrong
+  // the event FinishLynx is timing: scoreboard feed, else its window title
+  const ow = s.finishlynx_open_event;
+  const evt = s.scoreboard_event ? `Evt ${s.scoreboard_event}-${s.scoreboard_heat}`
+            : ow ? `Evt ${ow.event}-${ow.round}-${ow.heat}` : '';
+  const problem = !s.running ? '' : !s.finishlynx_connected ? 'link down' : !sbOk ? 'feed silent' : !camOk ? 'camera silent' : '';
+  document.getElementById('st-fl-t').textContent = problem ? `FinishLynx · ${problem}` :
+    ['FinishLynx', evt, s.finishlynx_clock_running ? fmtRace(s.finishlynx_race_seconds) : ''].filter(Boolean).join(' · ');
+  document.getElementById('chip-fl').title =
+    (ow ? `Open in FinishLynx: ${ow.name} (${ow.event}-${ow.round}-${ow.heat}) - finish reads for other races stay out of it\n` : '') +
+    `LapTime link: ${s.finishlynx_connected ? 'connected' : 'down'}\n` +
+    `Scoreboard feed: ${sbOk ? 'receiving' : s.scoreboard_listener_active ? 'nothing yet' : 'listener off'}` +
+    (camOn ? `\nCamera start: ${cs.receiving ? 'hearing the camera' : cs.running ? 'no camera replies' : 'not running'}` : '');
+}
+/* Stations chip: one short code per reader in use - "M1", "M2", "F" from
+   where it stands (Stations popover) - each with a dot. Green while the
+   reader is up; once it drops the dot fades through amber to red over 30 s,
+   so a glance says how long. A LoRa station counts as dropping when its
+   10-s heartbeat is overdue (15 s); one that is heard but whose own RFID
+   reader is down is amber. A station only shows once it has been heard
+   (since the console started); the local mat once it has connected; a
+   reader set to Not in use never shows. Re-drawn every second. */
+const FADE_START_SEC = 15, FADE_SEC = 30;
+let LOCAL_SEEN = false;
+function fadeColor(t) {
+  // 0 = green, 0.5 = amber, 1 = red
+  const G = [12, 163, 12], A = [250, 178, 25], R = [208, 59, 59];
+  t = Math.max(0, Math.min(1, t));
+  const [a, b, u] = t < 0.5 ? [G, A, t * 2] : [A, R, (t - 0.5) * 2];
+  return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * u)).join(',')})`;
+}
+function pointCode(p) {
+  if (p === chuteId()) return 'C';
+  const x = ((DATA && DATA.points) || []).find(q => q.id === p);
+  if (x && x.finish) return 'F';
+  const label = x ? x.label : p;
+  return label.split(/\s+/).map(w => /^\d/.test(w) ? w : w[0].toUpperCase()).join('');
+}
+function stationCode(id) {
+  const pts = (unitPoints(id) || [id]).filter(p => p !== '-');
+  return pts.map(pointCode).join('/');
+}
+function stationOrder(id) {
+  // course order: splits by distance, the finish last
+  const all = (DATA && DATA.points) || [];
+  const p = (unitPoints(id) || [id]).filter(x => x !== '-')[0];
+  if (p === chuteId()) return -1;                      // check-in comes before the course
+  const i = all.findIndex(q => q.id === p);
+  return i < 0 ? 99 : i;
+}
+function stationItems() {
+  const s = STATUS || {}, now = Date.now(), items = [];
+  if (s.reader_connected) LOCAL_SEEN = true;
+  if (!readerOff(LOCAL_READER) && s.running && (LOCAL_SEEN || s.reader_down_since)) {
+    const down = s.reader_connected ? 0 : s.reader_down_since ? (now - new Date(s.reader_down_since)) / 1000 : FADE_SEC;
+    items.push({ id: LOCAL_READER, t: s.reader_connected ? 0 : down / FADE_SEC,
+                 why: s.reader_connected ? 'reading' : `down ${Math.round(down)} s` });
+  }
+  for (const u of UNITS || []) {
+    if (!u.last_seen || readerOff(u.reader_id)) continue;
+    const age = (now - new Date(u.last_seen)) / 1000;
+    const late = (age - FADE_START_SEC) / FADE_SEC;
+    const t = late > 0 ? Math.max(late, u.state === 'reading' ? 0 : 0.5) : u.state === 'reading' ? 0 : 0.5;
+    items.push({ id: u.reader_id, t,
+                 why: late > 0 ? `not heard for ${Math.round(age)} s` : u.state === 'reading' ? 'reading' : `heard, reader ${u.state || '?'}` });
+  }
+  return items.sort((a, b) => stationOrder(a.id) - stationOrder(b.id));
+}
+function renderStationsChip() {
+  const el = document.getElementById('st-st'), chip = document.getElementById('chip-st');
+  if (!el) return;
+  const items = stationItems();
+  const name = id => id === LOCAL_READER ? 'This PC' : id;
+  el.innerHTML = items.length
+    ? 'Stations ' + items.map(i => `<span class="sta" title="${esc(name(i.id))} · ${esc(unitRoleText(i.id))} · ${esc(i.why)}">${esc(stationCode(i.id))}<span class="dot" style="background:${fadeColor(i.t)}"></span></span>`).join(' ')
+    : `<span class="dot"></span> Stations${STATUS && STATUS.running ? ' · none heard yet' : ''}`;
+  chip.style.gap = items.length ? '8px' : '';
+}
+function fmtOffset(v) { return v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3) + ' s'; }
+/* Film offset: each race learns its own from its evaluated finishes and a
+   new race starts at 0 (2026-10-01); a manual value is one for all. */
+function raceNameOf(k) { const r = DATA && DATA.races && DATA.races[String(k)]; return r ? r.name : `pane ${k}`; }
+function filmSummary(fo) {
+  if (!fo.apply) return `<span style="color:var(--crit)">off</span>`;
+  if (fo.source === 'manual') return `${fmtOffset(fo.manual)} · <span style="color:var(--warn)">manual, every race</span>`;
+  const learned = (fo.races || []).filter(r => r.samples);
+  if (!learned.length) return `<span style="color:var(--warn)">learning</span> · each race starts at 0`;
+  return learned.map(r => `${esc(raceNameOf(r.race))} ${fmtOffset(r.mean)} (${r.samples})`).join(' · ');
+}
+/* The pane's own value, in its summary line. */
+function filmPaneHtml(f) {
+  const tip = !f.apply ? 'Film offset is switched off (FinishLynx chip).'
+    : f.source === 'manual' ? 'Manual film offset, the same for every race (FinishLynx chip).'
+    : f.samples ? `Learned from the ${f.samples} finish${f.samples === 1 ? '' : 'es'} evaluated on film in this race; subtracted from its mat finishes.`
+    : 'Nothing evaluated on film in this race yet: its mat finishes go uncorrected until FinishLynx saves evaluated times for it.';
+  const v = !f.apply ? 'off' : (f.source === 'manual' || f.samples) ? fmtOffset(f.applied) : '0';
+  return `<span title="${esc(tip)}"><span class="n num">${v}</span> film${!f.apply ? '' : f.source === 'manual' ? ' (manual)' : f.samples ? ` · ${f.samples} eval` : ''}</span>`;
+}
+async function filmSet(body, okText) {
+  await popAct('/api/film_offset', body, okText);
+}
+function filmSetManual() {
+  const v = parseFloat(document.getElementById('p-film-manual').value);
+  if (isNaN(v)) { popMsg('Enter the offset in seconds, e.g. 0.65 (positive = RFID later than the film)', false); return; }
+  filmSet({ manual: v }, `Manual offset ${fmtOffset(v)}`);
+}
+/* The same controls in the Film chip and the Reader chip (one popover is
+   open at a time, so the ids do not collide). */
+function filmControlsHtml(fo) {
+  return `<div style="margin-bottom:6px">Applying now: <b>${filmSummary(fo)}</b></div>
+     <label class="inl"><input type="checkbox" id="p-film-apply" ${fo.apply ? 'checked' : ''} onchange="filmSet({apply: this.checked}, this.checked ? 'Correction on' : 'Correction off')"> subtract the offset from mat finish times</label>
+     <label class="inl">Manual, every race <input class="short" id="p-film-manual" type="number" step="0.01" placeholder="0.65" value="${fo.manual != null ? fo.manual : ''}"> s</label>
+     <button class="btn primary" onclick="filmSetManual()">Set</button>
+     ${fo.manual != null ? `<button class="btn" onclick="filmSet({manual: null}, 'Back to each race\\'s learned value')">Use learned</button>` : ''}
+     <button class="btn danger" onclick="if (confirm('Start learning over from now, in every race? Every evaluation already in the saved .lif files is set aside for good; only finishes you evaluate (or re-evaluate) after this moment count. Each race goes back to 0 (or your manual value) until then.')) filmSet({reset: true}, 'Learning restarted from now')">Reset learned</button>`;
+}
+
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 880; o.connect(g); g.connect(ctx.destination); g.gain.value = 0.2;
+    o.start(); setTimeout(() => { o.stop(); ctx.close(); }, 400);
+  } catch (e) {}
+}
+/* Reader dropouts that overlap a race: shown under the pane's gun row so
+   the operator knows which finishers may be missing. */
+function outageNote(race, s) {
+  if (!race.gun || !s || !(s.reader_outages || []).length || readerOff(LOCAL_READER)) return '';
+  const gun = new Date(race.gun).getTime();
+  const hits = s.reader_outages.filter(o => (o.end ? new Date(o.end).getTime() : Date.now()) > gun);
+  if (!hits.length) return '';
+  // Clock window plus the same window as race time, so the operator can
+  // see at once which finishers (by expected time) may be missing.
+  const rt = t => fmtRace(Math.max(0, (new Date(t).getTime() - gun) / 1000));
+  const fin = readerIsFinish(LOCAL_READER);
+  return `<div class="outage">⚠ ${fin ? 'Finish reader' : `Reader (${esc(unitRoleText(LOCAL_READER))})`} offline during this race: ${hits.map(o =>
+    `${fmtClock(o.start)}–${o.end ? fmtClock(o.end) : 'now'} (${Math.round(o.seconds)} s) = race time ${rt(o.start)}–${o.end ? rt(o.end) : 'now'}`).join(', ')} — ${fin ? 'finishes' : 'reads'} in those windows were not recorded</div>`;
+}
+
+/* ------------------------- chip popovers ------------------------- */
+/* Click a top-bar chip: details for that device plus the knobs you would
+   otherwise dig out of /classic → Settings. Info rows refresh with every
+   status poll; the controls keep whatever you have typed. */
+
+let CFG = {};          // last /api/config
+let UNITS = [];        // last /api/remote/units
+const POP = { kind: null, port: null, chip: null };
+
+async function loadConfig() {
+  try { CFG = await (await fetch('/api/config')).json(); } catch (e) {}
+}
+
+function togglePop(chip) {
+  const kind = chip.dataset.pop, port = chip.dataset.port || null;
+  if (POP.kind === kind && POP.port === port) { closePop(); return; }
+  openPop(kind, port, chip);
+}
+
+async function openPop(kind, port, chip) {
+  closePop();
+  POP.kind = kind; POP.port = port; POP.chip = chip;
+  chip.classList.add('open');
+  await loadConfig();
+  const el = document.getElementById('pop');
+  el.className = 'pop' + (kind === 'stations' || kind === 'app' ? ' wide' : '');
+  el.innerHTML = buildPop();
+  el.hidden = false;
+  if (kind === 'stations') renderStations(true);
+  placePop();
+  if (kind === 'app') loadSetup();
+}
+
+/* Setup check (Console chip): what a new timing PC still needs, each ✗
+   with its fix. Read-only on the server (setup_check.py). */
+async function loadSetup() {
+  const box = document.getElementById('setup-rows'), sum = document.getElementById('setup-sum');
+  if (!box) return;
+  box.textContent = 'Checking…';
+  let d;
+  try { d = await (await fetch('/api/setup_check')).json(); } catch (e) { d = { rows: [], error: String(e) }; }
+  if (!document.getElementById('setup-rows')) return;           // popover closed meanwhile
+  if (d.error && !(d.rows || []).length) { box.innerHTML = `<span style="color:var(--crit)">${esc(d.error)}</span>`; return; }
+  const bad = d.rows.filter(r => r.ok === false).length;
+  sum.innerHTML = bad ? `· <span style="color:var(--crit)">${bad} to fix</span>` : '· <span style="color:var(--good)">all set</span>';
+  let group = '';
+  box.innerHTML = d.rows.map(r => {
+    const head = r.group !== group ? `<div class="g">${esc(group = r.group)}</div>` : '';
+    const mark = r.ok === true ? '<span class="m ok">✓</span>' : r.ok === false ? '<span class="m bad">✗</span>' : '<span class="m na">–</span>';
+    return `${head}<div class="r" data-id="${esc(r.id)}">${mark}<div><div>${esc(r.label)}</div>
+      ${r.detail ? `<div class="d">${esc(r.detail)}</div>` : ''}${r.fix ? `<div class="f">${esc(r.fix)}</div>` : ''}</div></div>`;
+  }).join('');
+  placePop();
+}
+
+function placePop() {
+  const el = document.getElementById('pop'), chip = POP.chip;
+  if (!chip || el.hidden) return;
+  const r = chip.getBoundingClientRect();
+  const w = el.offsetWidth;
+  let left = r.left + window.scrollX;
+  left = Math.max(12, Math.min(left, window.scrollX + document.documentElement.clientWidth - w - 12));
+  el.style.left = left + 'px';
+  el.style.top = (r.bottom + window.scrollY + 6) + 'px';
+}
+
+function closePop() {
+  const el = document.getElementById('pop');
+  el.hidden = true; el.innerHTML = '';
+  if (POP.chip) POP.chip.classList.remove('open');
+  POP.kind = null; POP.port = null; POP.chip = null;
+}
+
+document.addEventListener('click', e => {
+  if (POP.kind && !e.target.closest('#pop') && !e.target.closest('.chip.click, .pop-anchor')) closePop();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePop(); });
+window.addEventListener('resize', placePop);
+
+function livePop() {
+  if (!POP.kind) return;
+  const [main, det] = splitRows(POP_ROWS[POP.kind](STATUS || {}));
+  const rows = document.querySelector('#pop .rows.main'), more = document.querySelector('#pop .rows.det');
+  if (rows) rows.innerHTML = rowsHtml(main);
+  if (more) more.innerHTML = rowsHtml(det);
+}
+
+/* A popover's rows: the few that matter first; a ['…'] marker row starts
+   the rest, which sit behind "Show details" (remembered while the page is
+   open). */
+let POP_DETAILS = false;
+function splitRows(rows) {
+  const i = rows.findIndex(r => r.length === 1 && r[0] === '…');
+  return i < 0 ? [rows, []] : [rows.slice(0, i), rows.slice(i + 1)];
+}
+function toggleDetails(b) {
+  POP_DETAILS = !POP_DETAILS;
+  document.querySelector('#pop .rows.det').hidden = !POP_DETAILS;
+  b.textContent = POP_DETAILS ? 'Hide details ▴' : 'Show details ▸';
+  placePop();
+}
+/* (i) on a section title: that section's setup notes, hidden by default */
+function toggleNote(b) {
+  const h = b.closest('.sec').querySelector(':scope > .hint');
+  h.hidden = !h.hidden;
+  b.classList.toggle('on', !h.hidden);
+}
+
+/* [key, value, cls] rows; a one-element [title] is a group heading */
+function rowsHtml(rows) {
+  return rows.map(([k, v, cls]) => v === undefined
+    ? `<span class="h">${esc(k)}</span>`
+    : `<span class="k">${esc(k)}</span><span class="v ${cls || ''}">${v == null || v === '' ? '—' : v}</span>`).join('');
+}
+function yn(b, yes, no) { return b ? `<span style="color:var(--good)">${yes || 'yes'}</span>`
+                                    : `<span style="color:var(--crit)">${no || 'no'}</span>`; }
+function fmtUp(sec) {
+  if (sec == null) return '—';
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  return (d ? d + 'd ' : '') + (h ? h + 'h ' : '') + m + 'm';
+}
+function parseElapsed(text) {
+  // "12:34", "1:02:03", "12:34.5", "754" -> seconds, or null
+  const t = String(text || '').trim();
+  if (!t) return null;
+  const parts = t.split(':');
+  if (parts.some(p => p === '' || isNaN(p))) return null;
+  let s = 0;
+  for (const p of parts) s = s * 60 + parseFloat(p);
+  return isFinite(s) && s >= 0 ? s : null;
+}
+function clockSourceText(s) {
+  return { manual: 'manual (set from console)', manual_tod: 'manual: time of day',
+           pinned: 'pinned to ' + ((s.led_clock_override && s.led_clock_override.race_name) || 'a race pane'),
+           race: 'race pane gun (latest racing pane)', camera: 'start sensor via camera',
+           finishlynx: "FinishLynx's running clock",
+           lora: 'gun over LoRa', idle: 'idle: time of day' }[s.led_clock_source] || '—';
+}
+
+/* Reads per antenna port since start/clear. A configured port with zero
+   reads while others are busy is a dead antenna or cable - shown in red. */
+function antennaReadsHtml(s) {
+  const counts = s.antenna_reads || {};
+  const ports = new Set([...(s.reader_antennas || []).map(String), ...Object.keys(counts)]);
+  if (!ports.size) return '—';
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  return [...ports].sort((a, b) => a - b).map(p => {
+    const n = counts[p] || 0;
+    const dead = total >= 20 && n === 0 && (s.reader_antennas || []).map(String).includes(p);
+    return `<span style="${dead ? 'color:var(--crit);font-weight:600' : n ? '' : 'color:var(--ink-3)'}" title="port ${p}">A${esc(p)}: ${n}${dead ? ' !' : ''}</span>`;
+  }).join(' · ');
+}
+
+/* info rows per chip - re-rendered every poll */
+const POP_ROWS = {
+  // Console chip = the app itself plus the read log (was the Reads chip)
+  app: s => [
+    ['State', yn(s.running, 'running', 'stopped')],
+    ['Reads', s.total_reads != null ? `${s.total_reads.toLocaleString()} · ${s.unique_bibs} bibs` : '—'],
+    ['Last read', esc(s.last_read_time)],
+    ['…'],
+    ['Station mode', s.mode === 'remote_lap' ? 'remote split station' : 'finish line'],
+    ['Uptime', fmtUp(s.uptime_sec)],
+    ['Version', esc(s.version)],
+    ['Log level', esc(s.log_level)],
+    ['Config file', esc(s.config_path)],
+  ],
+  reader: s => [
+    ['Link', yn(s.reader_connected, 'connected', 'not connected') + (CFG.reader ? ` · ${esc(`${CFG.reader.host}:${CFG.reader.port}`)}` : '')],
+    ['Reads by antenna', antennaReadsHtml(s)],
+    ['Last read', esc(s.last_read_time)],
+    ['…'],
+    ['Type', esc(CFG.reader && CFG.reader.type)],
+    ['Power', CFG.reader ? esc(CFG.reader.power_dbm + ' dBm') : '—'],
+    ['Antennas', CFG.reader ? esc((CFG.reader.antennas || []).join(', ') || 'every port') : '—'],
+    ['Dedup window', s.dedup_window_sec != null ? s.dedup_window_sec + ' s' : '—'],
+  ],
+  film: s => {
+    const fo = s.film_offset || {};
+    return [
+      ['Applied', !fo.apply ? `<span style="color:var(--crit)">off</span>`
+        : fo.source === 'manual' ? `${fmtOffset(fo.manual)} manual, every race` : 'each race its own learned value; a new race starts at 0'],
+      ['Copied rows seen', fo.unevaluated != null ? `${fo.unevaluated} (RFID time not yet evaluated on film)` : '—'],
+      ['Since reset', fo.reset_at ? `reset at ${fmtClock(fo.reset_at).slice(0, 8)} · ${fo.stale || 0} earlier evaluation${fo.stale === 1 ? '' : 's'} ignored` : 'no reset this meet'],
+      ['Last update', fo.updated_at ? fmtClock(fo.updated_at) : '—'],
+      // one row per race: what it applies, from how many, and per antenna
+      // port (a port uses its own mean once it has enough in that race, °)
+      ...((fo.races || []).map(r => [esc(raceNameOf(r.race)),
+        `<b>${r.samples ? fmtOffset(r.applied) : fo.source === 'manual' ? fmtOffset(fo.manual) : '0'}</b>`
+        + ` · ${r.samples} evaluated${r.spread != null ? ` (σ ±${r.spread.toFixed(3)})` : ''} · ${r.unevaluated} copied`
+        + (r.outliers ? ` · ${r.outliers} implausible` : '')
+        + ((r.antennas || []).length ? ' · ' + r.antennas.map(a =>
+            `<span title="${a.applied ? 'this port uses its own mean' : `race mean used until ${fo.antenna_min_samples} evaluated on this port`}" style="${a.applied ? '' : 'color:var(--ink-3)'}">A${a.antenna} ${fmtOffset(a.mean)} (${a.samples})${a.applied ? '' : '°'}</span>`).join(' ') : '')
+        + (r.file ? ' · ' + esc(r.file) : '')])),
+    ];
+  },
+  // FinishLynx chip = the LapTime link plus the scoreboard feed, the
+  // camera start sniffer and the film offset (all FinishLynx-side). One
+  // line each up top; everything else behind Show details.
+  fl: s => {
+    const cs = s.camera_start || {}, fo = s.film_offset;
+    return [
+      ['LapTime link', yn(s.finishlynx_connected, 'connected', 'down') + (CFG.finishlynx ? ` · ${esc(`${CFG.finishlynx.host}:${CFG.finishlynx.port}`)}` : '')],
+      ['Scoreboard feed', !s.scoreboard_listener_active ? '<span style="color:var(--crit)">listener off</span>'
+        : yn(s.scoreboard_connected, 'receiving', 'nothing yet') + (s.scoreboard_last_packet_age_sec != null ? ` · ${s.scoreboard_last_packet_age_sec} s ago` : '')],
+      ['Camera start', !s.camera_start_enabled ? 'off'
+        : !cs.running ? yn(false, 'not running')
+        : (cs.receiving ? yn(true, 'hearing the camera') : '<span style="color:var(--warn)">no camera replies</span>') + ` · ${cs.starts || 0} start${cs.starts === 1 ? '' : 's'}`],
+      ['Armed event', s.scoreboard_event ? esc(`${s.scoreboard_event}-${s.scoreboard_round || 1}-${s.scoreboard_heat}${s.scoreboard_race_name ? ' ' + s.scoreboard_race_name : ''}`)
+        + (s.finishlynx_clock_running ? ' · ' + fmtRace(s.finishlynx_race_seconds) : '') : 'none announced yet'],
+      ...(fo ? [['Film offset', filmSummary(fo)]] : []),
+      ['…'],
+      ['Sync mode', esc(CFG.finishlynx && CFG.finishlynx.sync_mode)],
+      ['Time syncs sent', s.finishlynx_sync_count != null ? s.finishlynx_sync_count.toLocaleString() : '—'],
+      ['Scoreboard feed (FinishLynx → here)'],
+      ...POP_ROWS.sb(s),
+      ['Start sensor via camera'],
+      ...(s.camera_start_enabled ? POP_ROWS.cam(s) : [['Sniffer', 'disabled']]),
+      ...(fo ? [['Film offset (mat → photo finish)'], ...POP_ROWS.film(s)] : []),
+    ];
+  },
+  sb: s => [
+    ['Listening', CFG.scoreboard ? esc(`UDP ${CFG.scoreboard.host}:${CFG.scoreboard.port}`) : '—',
+       s.scoreboard_listener_active ? '' : 'crit'],
+    ['Receiving', yn(s.scoreboard_connected, 'yes', 'nothing yet')],
+    ['Packets', s.scoreboard_packets != null ? s.scoreboard_packets.toLocaleString() : '—'],
+    ['Last packet', s.scoreboard_last_packet_age_sec != null ? s.scoreboard_last_packet_age_sec + ' s ago' : '—'],
+    ['Armed event', s.scoreboard_event ? esc(`${s.scoreboard_event} · round ${s.scoreboard_round || 1} · heat ${s.scoreboard_heat}`) : 'none announced yet'],
+    ['Race name', esc(s.scoreboard_race_name)],
+    ['Race clock', s.finishlynx_clock_running ? fmtRace(s.finishlynx_race_seconds) + ' running' : 'stopped'],
+  ],
+  cam: s => {
+    const c = s.camera_start || {};
+    const ev = c.last_event;
+    return [
+      ['Sniffer', c.running ? (c.receiving ? yn(true, 'hearing the camera') : '<span style="color:var(--warn)">running, no camera replies</span>')
+                            : yn(false, 'not running')],
+      ['Camera', esc(c.camera)],
+      ['Capture on', esc(c.interface)],
+      ['Status replies', c.replies != null ? c.replies.toLocaleString() : '—'],
+      ['Last reply', c.last_reply_age_sec != null ? c.last_reply_age_sec + ' s ago' : '—'],
+      ['Starts heard', c.starts != null ? c.starts : '—'],
+      ['Last start', c.last_start ? esc(c.last_start.slice(11, 23)) : '—'],
+      ['Last input event', ev ? `${esc(ev.code)} at ${esc(ev.wall.slice(11, 23))}${ev.is_start ? '' : ' (not the start sensor)'}` : '—'],
+      ['Error', c.error ? `<span style="color:var(--crit)">${esc(c.error)}</span>` : '—'],
+    ];
+  },
+  // One chip for every LED clock: what they all show, then a line per clock.
+  clocks: s => {
+    const rows = [['Source', clockSourceText(s)], ['Clocks']];
+    const clocks = s.led_clocks || [];
+    if (!clocks.length) rows.push(['Adapters', 'no clock adapter found (CH340 or PL2303)']);
+    for (const c of clocks)
+      rows.push([c.label, `<span style="color:${clockCol(c)}">${esc(clockWhy(c))}</span> · ${esc(c.port)} · ${clockModel(c)}`
+                          + (c.serial ? ` · sn ${esc(c.serial)}` : '')]);
+    return rows;
+  },
+  // Stations chip: the station table (Location per reader) is its own
+  // block below these rows; here only the radio that reaches the Pis.
+  stations: s => [
+    ['Radio link', s.lora_enabled ? yn(s.lora_connected, 'up', 'down') + (CFG.lora ? ` · ${esc(`${CFG.lora.port} @ ${CFG.lora.baud}`)}` : '') : 'disabled'],
+    ['…'],
+    ['This station ID', esc(CFG.lora && CFG.lora.reader_id)],
+    ...(UNITS || []).map(u => [u.reader_id, (u.version ? `v${esc(u.version)}` : 'version unknown')
+      + (u.last_seen ? ` · heard ${Math.round((Date.now() - new Date(u.last_seen)) / 1000)} s ago` : ' · never heard')]),
+  ],
+  unit: () => {
+    const { unit: u, rc } = unitReaderCfg(POP.port);
+    const age = u.last_seen ? Math.round((Date.now() - new Date(u.last_seen)) / 1000) : null;
+    const fresh = age !== null && age < 40;
+    const col = !fresh ? 'var(--crit)' : u.state === 'reading' ? 'var(--good)' : u.state === 'idle' ? 'var(--warn)' : 'var(--crit)';
+    return [
+      ['Station', esc(u.reader_id || POP.port)],
+      ['State', `<span style="color:${col}">${esc(fresh ? (u.state || '?') : 'silent')}</span>`],
+      ['Last heard', age === null ? '—' : age + ' s ago'],
+      ['Software', esc(u.version)],
+      ['Reader', rc ? `${esc(rc.type || '?')} at ${esc(rc.host)}:${esc(rc.port)} · ${esc(rc.power_dbm)} dBm` : 'not fetched yet'],
+      ['Ports on reader', rc && rc.ports ? esc(rc.ports) : (rc ? 'not probed yet' : '—')],
+      ['Antennas', unitPollingText(rc)],
+    ];
+  },
+};
+
+function popShell(title, kind, rows, sections) {
+  const [main, det] = splitRows(rows);
+  return `<h3>${title}<span class="x" onclick="closePop()" title="close">&times;</span></h3>
+    <div class="rows main">${rowsHtml(main)}</div>
+    ${det.length ? `<div class="rows det" style="padding-top:0"${POP_DETAILS ? '' : ' hidden'}>${rowsHtml(det)}</div>
+      <div class="more"><button onclick="toggleDetails(this)">${POP_DETAILS ? 'Hide details ▴' : 'Show details ▸'}</button></div>` : ''}
+    ${sections}<div class="msg" id="pop-msg"></div>`;
+}
+/* A popover section: title, controls; `hint` = setup notes behind the (i)
+   on the title; `trouble` = a line about something wrong right now, always
+   shown. */
+function popSec(title, inner, hint, trouble) {
+  return `<div class="sec"><div class="t">${title}${hint ? '<button class="ibtn" title="Setup notes" onclick="toggleNote(this)">i</button>' : ''}</div>
+    <div class="acts">${inner}</div>${trouble ? `<div class="trouble">${trouble}</div>` : ''}${hint ? `<div class="hint" hidden>${hint}</div>` : ''}</div>`;
+}
+
+function buildPop() {
+  const s = STATUS || {}, k = POP.kind, rows = POP_ROWS[k](s);
+  const r = CFG.reader || {}, f = CFG.finishlynx || {}, sb = CFG.scoreboard || {}, lo = CFG.lora || {};
+  switch (k) {
+    case 'app': return popShell('Console', k, rows,
+      popSec('Setup check <span id="setup-sum" style="text-transform:none;letter-spacing:0"></span>',
+        `<div id="setup-rows" class="setup">Checking…</div>
+         <button class="btn" onclick="loadSetup()">Check again</button>`,
+        'Is this PC ready for a meet: reader network, antennas and beep, clock drivers, FinishLynx settings (LapTime = Lynx on TCP 5000, scoreboard Example2.lss to 127.0.0.1:5891, input folder = RFID), the folders MeetPro and FinishLynx share, and Wireshark for camera starts. ✓ fine · ✗ fix it (how is written under it) · – does not apply or nothing to judge yet.') +
+      popSec('Control',
+        `<button class="btn" onclick="popAct(STATUS.running ? '/api/stop' : '/api/start', {}, STATUS.running ? 'Stopped' : 'Started')">${s.running ? 'Stop' : 'Start'} console</button>
+         <button class="btn" onclick="popLogs()">Recent warnings</button>
+         <a class="btn" href="/api/logs/export">Export log</a>`) +
+      popSec('Reads',
+        `<label class="inl">Mode <select id="p-opmode" onchange="setMode(this.value)">
+           <option value="finishlynx" ${s.operation_mode !== 'current_reads' ? 'selected' : ''}>FinishLynx (event-aware)</option>
+           <option value="current_reads" ${s.operation_mode === 'current_reads' ? 'selected' : ''}>Current reads (passthrough)</option></select></label>
+         <button class="btn" onclick="popAct('/api/reset-dedup')">Reset dedup</button>
+         <a class="btn" href="/api/reads/export">Export CSV</a>
+         <button class="btn danger" onclick="if (confirm('Clear the read log and dedup state? Race panes keep their reads.')) popAct('/api/reads/clear', {}, 'Reads cleared')">Clear reads</button>`,
+        'Mode: FinishLynx (event-aware) is the normal setting; passthrough sends every read as it comes. Reset dedup lets a bib read again inside the dedup window (for re-testing at the line). Clear reads empties the read log only; race panes keep their reads.') +
+      popSec('Process',
+        `<button class="btn danger" onclick="if (confirm('Restart the middleware? Reads and FinishLynx link drop for about 10 seconds; the launcher brings it back automatically.')) popAct('/api/shutdown', {}, 'Restarting…')">Restart (10 s)</button>
+         <button class="btn danger" onclick="if (confirm('Shut the middleware down? On this PC the launcher restarts it in 5 s; use the console window to stop it for good.')) popAct('/api/shutdown', {}, 'Shutting down')">Shut down</button>`,
+        'Low-level tools (serial discovery, time-sync test, EVT editor): <a href="/classic">legacy console</a>.'));
+
+    case 'reader': {
+      const every = !(r.antennas || []).length;
+      return popShell(`Local reader · ${esc(unitRoleText(LOCAL_READER))}`, k, rows,
+      popSec('Power & antennas',
+        `<label class="inl">Power <input class="short" id="p-power" type="number" step="0.5" min="5" max="33" value="${esc(r.power_dbm)}"> dBm</label>
+         <label class="inl"><input type="checkbox" id="p-all" ${every ? 'checked' : ''} onchange="document.querySelectorAll('.p-ant').forEach(x => x.disabled = this.checked)"> every port</label>
+         ${(r.type === 'vanch' ? [1,2,3,4,5,6,7,8] : [1,2,3,4]).map(a => `<label class="inl"><input type="checkbox" class="p-ant" value="${a}" ${(r.antennas||[]).includes(a) ? 'checked' : ''} ${every ? 'disabled' : ''}>A${a}</label>`).join('')}
+         <button class="btn primary" onclick="applyReaderPower()">Apply</button>`,
+        'Every port (the safe default) polls each port the reader has, so any 4- or 8-port Vanch with antennas on any ports reads them all. Tick specific ports for the fastest reads. Applying restarts the reader (2–5 s); never apply while runners are crossing.') +
+      popSec('Connection',
+        `<label class="inl">Type <select id="p-rtype"><option value="vanch" ${r.type==='vanch'?'selected':''}>Vanch</option><option value="impinj" ${r.type==='impinj'?'selected':''}>Impinj</option></select></label>
+         <label class="inl">IP <input class="mid" id="p-rhost" value="${esc(r.host)}"></label>
+         <label class="inl">Port <input class="short" id="p-rport" type="number" value="${esc(r.port)}"></label>
+         <button class="btn primary" onclick="applyReaderAddr()">Apply</button>`) +
+      popSec('Actions',
+        `<button class="btn" onclick="popAct('/api/test/reader')">Test reachability</button>
+         <button class="btn" onclick="popAct('/api/reader/restart')">Reconnect</button>
+         <button class="btn" onclick="popAct('/api/reset-dedup')">Reset dedup</button>
+         <button class="btn" onclick="popDiscoverReaders()">Find readers</button>
+         <button class="btn pop-anchor" onclick="openPop('stations', null, document.getElementById('chip-st'))">All stations</button>`,
+        'Reset dedup lets a bib read again inside the dedup window (for re-testing at the line). The film offset (mat → photo finish) is in the FinishLynx chip.'));
+    }
+
+    case 'unit': {
+      const { rc } = unitReaderCfg(POP.port);
+      const sel = rc ? unitPorts(rc.antennas) : [];
+      const every = !rc || rc.antennas === '' || rc.antennas === undefined;
+      // '?' marks ports above what the station reported; unknown count = no marks
+      const n = rc && parseInt(rc.ports) ? Math.max(parseInt(rc.ports), ...sel) : 8;
+      return popShell(`Station ${esc(POP.port)} · ${esc(unitRoleText(POP.port))}`, k, rows,
+        popSec('Antenna ports',
+          `<label class="inl"><input type="checkbox" id="u-all" ${every ? 'checked' : ''} onchange="document.querySelectorAll('.u-ant').forEach(x => x.disabled = this.checked)"> every port on the reader</label>
+           ${[1,2,3,4,5,6,7,8].map(a => `<label class="inl"><input type="checkbox" class="u-ant" value="${a}" ${sel.includes(a) ? 'checked' : ''} ${every ? 'disabled' : ''}>A${a}${a > n ? '<sup title="beyond the ports this reader reported">?</sup>' : ''}</label>`).join('')}
+           <label class="inl">Power <input class="short" id="u-power" type="number" step="0.5" min="5" max="33" value="${esc(rc ? rc.power_dbm : '')}" placeholder="keep"> dBm</label>
+           <button class="btn primary" onclick="applyUnitReader()">Send to station</button>
+           <button class="btn" onclick="refreshUnitReader()">Refresh from station</button>`,
+          'Every port is the safe default: whichever 4- or 8-port Vanch is on the station, with antennas on any ports, all of them are polled. Tick specific ports for the fastest reads. Goes over the radio (allow up to 10 s); the station reconnects its reader by itself after applying.') +
+        popSec('Station',
+          `<button class="btn" onclick="unitCmd('GET_STATUS')">Status</button>
+           <button class="btn" onclick="unitCmd('RESET_DEDUP')">Reset dedup</button>
+           <button class="btn danger" onclick="if (confirm('Restart the station software? Its reads pause for about 20 s.')) unitCmd('RESTART')">Restart software</button>
+           <button class="btn pop-anchor" onclick="openPop('stations', null, document.getElementById('chip-st'))">All stations</button>`,
+          'Reset dedup lets a bib read again at that station inside the dedup window.'));
+    }
+
+    case 'fl': {
+      const cc = CFG.camera_start || {};
+      return popShell('FinishLynx', k, rows,
+      popSec('Connection',
+        `<label class="inl">IP <input class="mid" id="p-fhost" value="${esc(f.host)}"></label>
+         <label class="inl">Port <input class="short" id="p-fport" type="number" value="${esc(f.port)}"></label>
+         <label class="inl">Sync <select id="p-fsync"><option value="internal" ${f.sync_mode==='internal'?'selected':''}>internal</option><option value="external" ${f.sync_mode==='external'?'selected':''}>external</option><option value="none" ${f.sync_mode==='none'?'selected':''}>none</option></select></label>
+         <label class="inl">Sends <select id="p-ffeed"><option value="finish" ${f.feed !== 'all' ? 'selected' : ''}>finish-line reads only</option><option value="all" ${f.feed === 'all' ? 'selected' : ''}>finish reads + splits the panes accept</option></select></label>
+         <button class="btn primary" onclick="applyFinishLynx()">Apply</button>`,
+        'In FinishLynx: File → Options → LapTime, Device = Lynx, Network listen on this port. Sync should stay internal. "Finish-line reads only" keeps split-station reads out of LapTime (its packets carry no split number, so FinishLynx puts each one in the athlete\'s next lap slot and a Mile 1 can become a final time); splits reach MeetPro through the .lif. Choose "every read" only with the event\'s Total Laps set to split points + 1.') +
+      popSec('Actions',
+        `<button class="btn" onclick="popAct('/api/test/finishlynx')">Test reachability</button>
+         <button class="btn" onclick="popAct('/api/finishlynx/reconnect')">Reconnect</button>
+         <button class="btn" onclick="popTimeSync()">Send time sync</button>
+         <button class="btn" onclick="closePop(); quickBib()">Quick bib</button>
+         <button class="btn" onclick="if (confirm('Send a Z (zero/start = now) packet to FinishLynx? Only matters in external sync mode.')) popAct('/api/send-start', {}, 'Zero sent')">Send zero now</button>`) +
+      popSec('Scoreboard feed (FinishLynx → here)',
+        `<label class="inl">UDP port <input class="short" id="p-sport" type="number" value="${esc(sb.port)}"></label>
+         <button class="btn primary" onclick="applyScoreboard()">Apply</button>
+         <button class="btn" onclick="popAct('/api/scoreboard/restart')">Restart listener</button>`,
+        `In FinishLynx: File → Options → Scoreboard → entry "Middleware": script Example2.lss, Network UDP to 127.0.0.1:${esc(sb.port)}, running time on, results if armed on.`) +
+      popSec('Start sensor via camera',
+        `<label class="inl"><input type="checkbox" id="p-cen" ${cc.enabled ? 'checked' : ''}> enabled</label>
+         <label class="inl">Camera IP <input class="mid" id="p-chost" value="${esc(cc.camera_host)}"></label>
+         <label class="inl">Interface <input class="mid" id="p-cif" value="${esc(cc.interface)}" placeholder="auto"></label>
+         <button class="btn primary" onclick="applyCam()">Apply &amp; restart</button>`,
+        'Reads the start-sensor record out of the camera\'s status replies to FinishLynx using tshark (Wireshark/Npcap). Each start lands in the waiting race pane and drives the LED clocks, whether or not FinishLynx accepts it.') +
+      (s.film_offset ? popSec('Film offset (mat → photo finish)', filmControlsHtml(s.film_offset),
+        'As you evaluate finishes on the film and FinishLynx saves the event, each athlete\'s exact time is compared with the mat read. Each race learns its own average difference (positive = the chip crossed the mat after the torso crossed the line) and subtracts it from that race\'s mat finishes shown here, exported, and sent to FinishLynx from then on, so unevaluated athletes get film-like times. A new race starts at 0 until its first evaluations are saved. Hand-entered finishes are never adjusted. Rows FinishLynx merely copied from us are recognised and ignored. Everything here clears when the meet is closed.') : ''));
+    }
+
+    // Stations chip: every reader with its Location (the old sidebar
+    // panel), then the radio that reaches the split stations.
+    case 'stations': return popShell('Stations', k, rows,
+      `<div class="sec" style="padding:0 0 4px"><table id="units"></table><div class="note" id="units-foot" hidden></div></div>` +
+      popSec('Radio gateway (LoRa)',
+        `<label class="inl"><input type="checkbox" id="p-len" ${lo.enabled ? 'checked' : ''}> enabled</label>
+         <label class="inl">Port <input class="mid" id="p-lport" list="p-ports" value="${esc(lo.port)}"><datalist id="p-ports"></datalist></label>
+         <label class="inl">Baud <select id="p-lbaud">${[9600,19200,38400,57600,115200].map(b => `<option ${b==lo.baud?'selected':''}>${b}</option>`).join('')}</select></label>
+         <label class="inl">Station ID <input class="short" id="p-lid" value="${esc(lo.reader_id)}"></label>
+         <button class="btn primary" onclick="applyLora()">Apply</button>
+         <button class="btn" onclick="popScanPorts()">Scan ports</button>
+         <button class="btn" onclick="popAct('/api/lora/restart')">Restart radio</button>`,
+        'Location: where each reader stands on the course. Changing it re-labels reads already heard, so it can be fixed mid-race. "(one mat)" = one mat crossed more than once, counted by pass; "skip 1st crossing" = a loop course. The top-bar chip shows each reader in use with a dot that fades from green to red over 30 s once it stops being heard. Radio: every Pi station reaches this console over this radio. Port is the gateway\'s COM port, or host:port for a TCP gateway. Apply reopens the radio. Each station\'s reader ports and power are behind its Reader… button.'));
+
+    case 'clocks': {
+      const clocks = s.led_clocks || [];
+      const ov = s.led_clock_override;
+      const hf = (CFG.led_clock && CFG.led_clock.hour_format) || '24';
+      const pinned = ov && ov.mode === 'race' ? ov.race : null;
+      const raceOpts = (DATA && DATA.enabled ? DATA.order : []).map(key => DATA.races[String(key)])
+        .filter(r => r.gun && r.status !== 'final')
+        .map(r => `<option value="${r.key}" ${pinned === r.key ? 'selected' : ''}>${esc(r.name)} · gun ${fmtClock(r.gun)}</option>`).join('');
+      return popShell('LED clocks', k, rows,
+        popSec('All clocks show',
+          `<label class="inl">Follow race <select id="p-race" onchange="clockFollowRace()">
+             <option value="" ${pinned ? '' : 'selected'}>automatic (latest racing pane)</option>${raceOpts}</select></label>
+           <label class="inl">Count up from <input class="short" id="p-elapsed" placeholder="12:34"></label>
+           <button class="btn primary" onclick="clockSet()">Set</button>
+           <button class="btn" onclick="popAct('/api/clocks/gun', {mode:'now'}, 'Counting from 0:00')">Start 0:00 now</button>
+           <button class="btn" onclick="popAct('/api/clocks/gun', {mode:'tod'}, 'Showing time of day')">Time of day</button>
+           ${ov ? `<button class="btn go" onclick="popAct('/api/clocks/gun', {mode:'auto'}, 'Back to automatic')">Back to auto</button>` : ''}
+           <label class="inl">Time of day as <select id="p-hourfmt" onchange="clockHourFormat()">
+             <option value="24" ${hf === '12' ? '' : 'selected'}>24-hour (14:05:00)</option>
+             <option value="12" ${hf === '12' ? 'selected' : ''}>12-hour (2:05:00)</option></select></label>`,
+          'Automatic: the latest racing pane\'s gun wins, else FinishLynx\'s running clock, else time of day. Follow race pins the clocks to one pane instead (e.g. for a straggler); no pane\'s gun is changed and it releases itself when that race is closed. Time of day and Count up hold every clock (finish and stations) until Back to auto. Split-station clocks mirror whatever is chosen here.',
+          pinned ? `Pinned to ${esc(ov.race_name || 'a race pane')} until that race closes or Back to auto.`
+          : ov ? (() => {
+              const racing = (DATA && DATA.enabled ? DATA.order : []).map(key => DATA.races[String(key)]).filter(r => r.status === 'racing' && r.gun);
+              return (ov.mode === 'tod' ? 'Parked on time of day' : 'Manual override is on') + ' until Back to auto.'
+                + (racing.length ? ` ${esc(racing.map(r => r.name).join(', '))} is racing (gun ${fmtClock(racing[racing.length - 1].gun)}).` : '');
+            })() : '') +
+        (clocks.length ? '' : popSec('Clocks', 'No clock adapter found (CH340 or PL2303).', '', 'Plug a clock in; it appears here within a few seconds.')) +
+        clocks.map((c, i) => popSec(`<span style="color:${clockCol(c)}">●</span> ${esc(c.label)} · ${esc(c.port)}`,
+          `<label class="inl">Label <input class="mid" id="p-clabel-${i}" value="${esc(c.status === 'unknown' && !c.configured ? '' : c.label)}" placeholder="e.g. Finish"></label>
+           <button class="btn primary" onclick="clockLabel('${esc(c.port)}', ${i})">Save</button>
+           <label class="inl">Type <select id="p-ctype-${i}" onchange="clockType('${esc(c.port)}', ${i})">
+             <option value="auto" ${!c.configured || c.kind === 'unknown' ? 'selected' : ''}>auto</option>
+             <option value="ch340" ${c.kind === 'ch340' && c.configured ? 'selected' : ''}>LED clock (CH340)</option>
+             <option value="electro" ${c.kind === 'electro' && c.configured ? 'selected' : ''}>Electro Numerics</option>
+             <option value="none">not a clock</option></select></label>
+           <button class="btn" onclick="popAct('/api/clocks/${encodeURIComponent(c.port)}', {enabled: ${c.enabled === false}}, '${c.enabled === false ? 'Enabled' : 'Disabled'}')">${c.enabled === false ? 'Enable' : 'Disable'}</button>
+           <button class="btn" onclick="popAct('/api/clocks/${encodeURIComponent(c.port)}/retry', {}, 'Retrying port')">Retry port</button>`,
+          (c.kind === 'electro' ? 'The Electro clock must be in "rd" (remote display) mode on the unit or it ignores everything. ' : '')
+            + 'Settings follow this clock to whatever COM port it lands on. Disable keeps it listed but stops driving it (e.g. when FinishLynx should run it).',
+          c.status === 'unknown' ? 'A USB-serial device that did not answer as an LED clock. If it is the Electro clock on a different adapter, choose Electro Numerics; if it is something else, choose "not a clock" to hide it.'
+          : c.status === 'busy' ? 'Busy usually means FinishLynx\'s own Scoreboard entry has this COM port. Disable that entry in FinishLynx, or disable this clock here to stop the retries.'
+          : c.status === 'missing' ? 'Configured but not plugged in right now.' : '')).join(''));
+    }
+  }
+  return '';
+}
+
+/* action helpers */
+function popMsg(text, ok) {
+  const m = document.getElementById('pop-msg');
+  if (!m) return;
+  m.textContent = text || ''; m.className = 'msg ' + (ok ? 'ok' : 'bad');
+}
+async function popAct(path, body, okText) {
+  popMsg('…', true);
+  let d = {};
+  try {
+    const r = await fetch(path, { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                  body: JSON.stringify(body || {}) });
+    d = await r.json().catch(() => ({}));
+    const ok = r.ok && d.success !== false && !d.error;
+    popMsg(d.message || d.error || (ok ? (okText || 'Done') : 'Failed'), ok);
+  } catch (e) { popMsg('request failed: ' + e, false); }
+  setTimeout(async () => { await loadConfig(); pollStatus(); refresh(); }, 600);
+  return d;
+}
+async function popConfig(patch, okText, after) {
+  const d = await popAct('/api/config', patch, okText);
+  if (after && d && d.success) await after(d);
+  return d;
+}
+function applyReaderPower() {
+  const power = parseFloat(document.getElementById('p-power').value);
+  const every = document.getElementById('p-all').checked;
+  const ants = every ? [] : [...document.querySelectorAll('.p-ant:checked')].map(x => parseInt(x.value));
+  if (!(power >= 5 && power <= 33)) return popMsg('power must be 5–33 dBm', false);
+  if (!every && !ants.length) return popMsg('pick at least one antenna, or every port', false);
+  popConfig({ reader: { power_dbm: power, antennas: ants } }, every ? 'Polling every port' : 'Power/antennas applied');
+}
+
+/* Split-station reader settings travel by radio: CFGS out, ACK back (the
+   web call waits up to 10 s). The station reconnects its reader itself. */
+async function unitPost(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    return await r.json().catch(() => ({}));
+  } catch (e) { return { success: false, message: 'request failed: ' + e }; }
+}
+async function applyUnitReader() {
+  const every = document.getElementById('u-all').checked;
+  const ants = every ? [] : [...document.querySelectorAll('.u-ant:checked')].map(x => parseInt(x.value));
+  if (!every && !ants.length) return popMsg('pick at least one port, or every port', false);
+  const values = { antennas: ants };
+  const pv = document.getElementById('u-power').value.trim();
+  if (pv !== '') {
+    const p = parseFloat(pv);
+    if (!(p >= 5 && p <= 33)) return popMsg('power must be 5–33 dBm', false);
+    values.power_dbm = p;
+  }
+  popMsg('sending over the radio…', true);
+  const d = await unitPost(`/api/remote/units/${encodeURIComponent(POP.port)}/config`, { section: 'reader', values });
+  popMsg(d.success ? `Station acknowledged; its reader is reconnecting with ${every ? 'every port' : 'ports ' + ants.join(', ')}`
+                   : (d.message || 'no acknowledgement from the station'), !!d.success);
+  if (d.success) setTimeout(refreshUnitReader, 8000);   // read back what it actually polls
+}
+/* Which point(s) a reader's reads count as. races.reader_points in config
+   (mirrored in DATA.reader_points) maps a reader id - a station, or the
+   local mat (LOCAL_READER) - to an ordered list of points: one entry
+   renames, two or more hand out points by pass number. No entry: the id is
+   the point (S1 = Mile 1, FINISH = the finish). A station mapped to the
+   finish point IS the finish line (places, promotion of splits, the
+   FinishLynx feed, film offset, the offline alarm all follow the map). */
+const LOCAL_READER = 'FINISH';
+function unitPoints(id) {
+  const rp = (DATA && DATA.reader_points) || {};
+  return Array.isArray(rp[id]) && rp[id].length ? rp[id].slice() : null;
+}
+function finishPointIds() {
+  return ((DATA && DATA.points) || []).filter(p => p.finish).map(p => p.id);
+}
+function readerIsFinish(id) {
+  if (!DATA) return id === LOCAL_READER;          // before the first snapshot
+  if (Array.isArray(DATA.finish_reader_ids)) return DATA.finish_reader_ids.includes(id);
+  const pts = unitPoints(id), fin = finishPointIds();
+  return pts ? pts.some(p => fin.includes(p)) : fin.includes(id);
+}
+function readerOff(id) { return (unitPoints(id) || [])[0] === 'off'; }
+function chuteId() { return (DATA && DATA.chute_reader) || 'CHUTE'; }
+function pointLabel(p) {
+  if (p === '-') return 'not a split';
+  if (p === 'off') return 'not in use';
+  if (p === chuteId()) return 'Check-in';
+  const x = ((DATA && DATA.points) || []).find(q => q.id === p);
+  return x ? x.label : p;
+}
+function unitRoleText(id) {
+  const pts = unitPoints(id);
+  if (pts) return pts.map(pointLabel).join(', then ');
+  const own = ((DATA && DATA.points) || []).find(q => q.id === id);
+  return own ? own.label : `"${id}" (not a known split point)`;
+}
+/* The Location <select> of one row in the Stations panel: any single point
+   (a mile marker or the finish), a run of points for one mat crossed more
+   than once (by pass order), and the loop-course "skip the first crossing"
+   forms. The value is the comma-joined point list; choosing a station's
+   own id (or Finish for the local mat) clears its entry in reader_points. */
+function locationValue(id) {
+  const cur = unitPoints(id);
+  return cur ? cur.join(',') : id;
+}
+function locationOptions(id) {
+  const all = (DATA && DATA.points) || [];
+  const splits = all.filter(p => !p.finish), fins = all.filter(p => p.finish);
+  const curKey = locationValue(id);
+  const opts = [];
+  for (const p of fins.concat(splits)) opts.push([p.id, p.label]);
+  if (splits.length >= 2)
+    opts.push([splits.map(p => p.id).join(','), splits.map(p => p.label).join(', then ') + ' (one mat)']);
+  for (const f of fins)
+    for (let i = 0; i < splits.length; i++) {
+      const run = splits.slice(i).concat([f]);
+      opts.push([run.map(p => p.id).join(','), run.map(p => p.label).join(', then ') + ' (one mat)']);
+    }
+  for (const p of fins.concat(splits)) opts.push([`-,${p.id}`, `${p.label}, skip 1st crossing (loop)`]);
+  // check-in chute: every tag read joins the race whose Check-in is open
+  opts.push([chuteId(), 'Check-in (chute)']);
+  opts.push(['off', 'Not in use']);
+  if (!opts.some(o => o[0] === curKey)) opts.push([curKey, (unitPoints(id) || [id]).map(pointLabel).join(', then ')]);
+  return opts.map(([v, t]) => `<option value="${esc(v)}" ${v === curKey ? 'selected' : ''}>${esc(t)}</option>`).join('');
+}
+function stationsMsg(text, ok) {
+  const f = document.getElementById('units-foot');
+  if (!f) return;                       // the Stations popover was closed meanwhile
+  f.hidden = false;
+  f.innerHTML = `<span class="${ok ? 'msg-ok' : 'msg-bad'}">${esc(text)}</span>`;
+  setTimeout(renderStations, 2500);
+}
+async function saveReaderPoints(rp, passWindow, okText) {
+  const body = { races: { reader_points: rp } };
+  if (passWindow != null) body.races.pass_window_sec = passWindow;
+  let d = {};
+  try {
+    const r = await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    d = await r.json().catch(() => ({}));
+    const ok = r.ok && d.success !== false && !d.error;
+    stationsMsg(ok ? okText : (d.error || d.message || 'save failed'), ok);
+  } catch (e) { stationsMsg('request failed: ' + e, false); }
+  await loadConfig(); refresh();
+}
+async function setLocation(id, v) {
+  const pts = v.split(',').filter(Boolean);
+  const rp = Object.assign({}, (DATA && DATA.reader_points) || {});
+  if (pts.length === 1 && pts[0] === id) delete rp[id]; else rp[id] = pts;
+  const fin = finishPointIds();
+  const isFin = pts.some(p => fin.includes(p));
+  // every other reader that is at the finish right now
+  const others = Object.keys(rp).filter(r => r !== id && rp[r].some(p => fin.includes(p)))
+    .concat(fin.filter(f => f !== id && !rp[f]));
+  const name = r => r === LOCAL_READER ? 'This PC' : r;
+  if (!isFin && !others.length
+      && !confirm(`No station would be at the finish line: nobody gets placed until one is set to Finish. Move ${name(id)} to ${pts.map(pointLabel).join(', then ')} anyway?`)) {
+    renderStations(true); return;
+  }
+  // One finish line is the normal case: offer to take the others out of
+  // use (two mats at the line is legitimate, so Cancel keeps them).
+  if (isFin && others.length
+      && confirm(`${others.map(name).join(' and ')} ${others.length > 1 ? 'are' : 'is'} also at the finish. Make ${name(id)} the only finish and set ${others.map(name).join(' and ')} to Not in use?\n\nCancel keeps both at the finish (two mats on one line).`))
+    for (const o of others) rp[o] = ['off'];
+  await saveReaderPoints(rp, null, `${name(id)}: ${pts.map(pointLabel).join(', then ')}${isFin ? ' — the finish line' : ''}`);
+}
+async function setPassWindow(v) {
+  const w = parseFloat(v);
+  if (!(w >= 0 && w <= 3600)) return stationsMsg('pass window must be 0–3600 s', false);
+  await saveReaderPoints((DATA && DATA.reader_points) || {}, w, `Same pass within ${w} s`);
+}
+async function refreshUnitReader() {
+  const id = POP.port;
+  popMsg('asking the station…', true);
+  let d = {};
+  try { d = await (await fetch(`/api/remote/units/${encodeURIComponent(id)}/config?section=reader`)).json(); } catch (e) {}
+  await pollUnits();
+  if (POP.kind !== 'unit' || POP.port !== id) return;
+  document.getElementById('pop').innerHTML = buildPop();
+  placePop();
+  popMsg(d.success ? 'Updated from station' : (d.message || 'no reply from the station'), !!d.success);
+}
+async function unitCmd(cmd, id) {
+  popMsg('sending…', true);
+  const d = await unitPost(`/api/remote/units/${encodeURIComponent(id || POP.port)}/command`, { command: cmd });
+  popMsg(d.success ? (d.data ? String(d.data) : cmd + ' acknowledged') : (d.message || 'no acknowledgement'), !!d.success);
+  pollUnits();
+}
+function applyReaderAddr() {
+  const host = document.getElementById('p-rhost').value.trim(), port = parseInt(document.getElementById('p-rport').value);
+  popConfig({ reader: { host, port, type: document.getElementById('p-rtype').value } }, 'Saved',
+    () => popAct('/api/reader/restart', {}, 'Reader reconnected'));
+}
+function applyFinishLynx() {
+  popConfig({ finishlynx: { host: document.getElementById('p-fhost').value.trim(),
+                            port: parseInt(document.getElementById('p-fport').value),
+                            sync_mode: document.getElementById('p-fsync').value,
+                            feed: document.getElementById('p-ffeed').value } }, 'Saved',
+    () => popAct('/api/finishlynx/reconnect'));
+}
+function applyScoreboard() {
+  popConfig({ scoreboard: { port: parseInt(document.getElementById('p-sport').value) } }, 'Saved',
+    () => popAct('/api/scoreboard/restart'));
+}
+function applyCam() {
+  popAct('/api/camera-start/restart', { enabled: document.getElementById('p-cen').checked,
+                                        camera_host: document.getElementById('p-chost').value.trim(),
+                                        interface: document.getElementById('p-cif').value.trim() || 'auto' },
+         'Camera start listener restarted');
+}
+function applyLora() {
+  popConfig({ lora: { enabled: document.getElementById('p-len').checked,
+                      port: document.getElementById('p-lport').value.trim(),
+                      baud: parseInt(document.getElementById('p-lbaud').value),
+                      reader_id: document.getElementById('p-lid').value.trim() } }, 'Saved',
+    () => popAct('/api/lora/restart'));
+}
+async function popScanPorts() {
+  const d = await popAct('/api/discover/serial', {}, 'Scanned');
+  const dl = document.getElementById('p-ports');
+  if (dl && Array.isArray(d.ports)) {
+    dl.innerHTML = d.ports.map(p => `<option value="${esc(p.port || p.device || p)}">${esc(p.description || '')}</option>`).join('');
+    popMsg(d.ports.length ? 'Ports: ' + d.ports.map(p => p.port || p.device || p).join(', ') : 'No serial ports found', !!d.ports.length);
+  }
+}
+async function popDiscoverReaders() {
+  const d = await popAct('/api/discover/readers', {}, 'Scanned');
+  if (Array.isArray(d.devices) && d.devices.length)
+    popMsg(d.message + ': ' + d.devices.map(x => x.host || x.hostname).join(', '), true);
+}
+async function popTimeSync() {
+  const d = await popAct('/api/test/time-sync', {}, 'Sent');
+  if (Array.isArray(d.components)) {
+    const fl = d.components.find(c => c.name === 'FinishLynx');
+    if (fl) popMsg(`FinishLynx: ${fl.message}`, fl.status === 'ok');
+  }
+}
+async function popLogs() {
+  const pop = document.getElementById('pop');
+  let box = pop.querySelector('.logs');
+  if (box) { box.remove(); return; }
+  let logs = [];
+  try { logs = await (await fetch('/api/logs?level=WARNING,ERROR')).json(); } catch (e) {}
+  box = document.createElement('div'); box.className = 'logs';
+  box.textContent = logs.length
+    ? logs.slice(-12).map(l => `${(l.timestamp || '').slice(11, 19)} ${l.level.padEnd(7)} ${l.message}`).join('\n')
+    : 'no warnings or errors in the buffer';
+  pop.insertBefore(box, document.getElementById('pop-msg'));
+  placePop();
+}
+function clockSet() {
+  const secs = parseElapsed(document.getElementById('p-elapsed').value);
+  if (secs == null) return popMsg('enter a time like 12:34, 1:02:03 or 754', false);
+  popAct('/api/clocks/gun', { mode: 'elapsed', elapsed_seconds: secs }, 'Counting up from ' + fmtRace(secs));
+}
+function clockLabel(port, i) {
+  popAct(`/api/clocks/${encodeURIComponent(port)}`, { label: document.getElementById(`p-clabel-${i}`).value }, 'Label saved');
+}
+function clockFollowRace() {
+  const key = document.getElementById('p-race').value;
+  if (key) popAct('/api/clocks/gun', { mode: 'race', race: parseInt(key) }, 'Clocks pinned to that race');
+  else popAct('/api/clocks/gun', { mode: 'auto' }, 'Back to automatic');
+}
+function pinClocks(key) {
+  fetch('/api/clocks/gun', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ mode: 'race', race: key }) })
+    .then(r => r.json()).then(d => { if (d.success === false) alert(d.message || 'could not pin clocks'); pollStatus(); });
+}
+function unpinClocks() {
+  fetch('/api/clocks/gun', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ mode: 'auto' }) }).then(() => pollStatus());
+}
+function clockHourFormat() {
+  const fmt = document.getElementById('p-hourfmt').value;
+  popConfig({ led_clock: { hour_format: fmt } }, `Time of day now ${fmt}-hour on every clock`);
+}
+async function clockType(port, i) {
+  const type = document.getElementById(`p-ctype-${i}`).value;
+  if (type === 'none' && !confirm('Hide this port from the clock list? Choose "auto" again later from the legacy console config if needed.')) return;
+  await popAct(`/api/clocks/${encodeURIComponent(port)}`, { type }, 'Type saved');
+  // the per-clock sections are rebuilt from the new list
+  setTimeout(() => { const chip = document.getElementById('chip-clocks'); if (chip) openPop('clocks', null, chip); }, 1500);
+}
+
+/* One chip for all LED clocks. Green = every clock in use is driving, amber
+   = some are (the rest unplugged since, or their port held by FinishLynx),
+   red = none is. A configured clock not plugged in since the console
+   started is not in use at this meet and is left out. The text says what the clocks show right now. With clocks
+   disabled in config the chip is simply absent. */
+function fmtRace(sec) {
+  if (sec == null || !isFinite(sec)) return '';
+  sec = Math.max(0, sec);
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = Math.floor(sec % 60);
+  return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(s).padStart(2, '0');
+}
+/* What every clock is being sent right now: race time from the gun in use
+   (and whose gun it is), a manual count-up, or this PC's time of day in
+   the clocks' 12/24-hour format. Worked out on the PC's clock (status
+   server_time), so a browser on another laptop shows the same thing. */
+let SERVER_SKEW = 0;      // PC clock - browser clock, ms
+function clockDisplay(s) {
+  const now = Date.now() + SERVER_SKEW;
+  const ov = s.led_clock_override;
+  if (s.led_clock_gun) {
+    const gun = new Date(s.led_clock_gun).getTime();
+    const pane = () => {
+      const r = (DATA && DATA.enabled ? Object.values(DATA.races) : [])
+        .find(r => r.gun && Math.abs(new Date(r.gun).getTime() - gun) < 1000);
+      return r ? r.name : 'race pane';
+    };
+    const what = { manual: 'count-up', pinned: (ov && ov.race_name) || 'pinned race', race: pane(),
+                   camera: 'camera start', finishlynx: 'FinishLynx clock', lora: 'gun over radio' }[s.led_clock_source] || 'race time';
+    return { value: fmtRace((now - gun) / 1000), what };
+  }
+  const d = new Date(now);
+  const hf = (CFG && CFG.led_clock && CFG.led_clock.hour_format) || '24';
+  const h = hf === '12' ? (d.getHours() % 12 || 12) : String(d.getHours()).padStart(2, '0');
+  const p2 = n => String(n).padStart(2, '0');
+  return { value: `${h}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`,
+           what: ov && ov.mode === 'tod' ? 'time of day (held)' : 'time of day' };
+}
+let CLOCK_STATUS = null;
+function renderClocksChip(s) {
+  // the skew is taken when a status arrives, not on the per-second redraw
+  if (s !== CLOCK_STATUS && s.server_time) SERVER_SKEW = new Date(s.server_time).getTime() - Date.now();
+  CLOCK_STATUS = s;
+  const chip = document.getElementById('chip-clocks');
+  chip.hidden = !s.led_clock_enabled;
+  if (chip.hidden) return;
+  const all = Array.isArray(s.led_clocks) ? s.led_clocks : [];
+  // unidentified serial devices, clocks disabled here, and configured clocks
+  // not plugged in since the console started (not used at this meet) do not
+  // count; one that was plugged in and went away does (2026-09-30)
+  const clocks = all.filter(c => c.enabled !== false && c.status !== 'unknown'
+                                 && !(c.status === 'missing' && c.seen === false));
+  const driving = clocks.filter(c => c.status === 'driving').length;
+  const el = document.getElementById('st-clocks');
+  // what the clocks are being sent, then words only for what needs a look
+  const show = clockDisplay(s);
+  let html = `Clocks <b class="num">${esc(show.value)}</b> · ${esc(show.what)}`;
+  if (!clocks.length) { el.className = 'dot'; html = 'Clocks · none found'; }
+  else {
+    dot('st-clocks', driving === clocks.length, driving > 0);
+    if (driving < clocks.length) html += ` · ${driving}/${clocks.length} driving`;
+  }
+  document.getElementById('st-clocks-t').innerHTML = html;
+  chip.title = all.length ? all.map(c => `${c.label}: ${clockWhy(c)}`).join('\n') : 'No clock adapter found (CH340 or PL2303)';
+}
+function clockCol(c) {
+  return c.status === 'driving' ? 'var(--good)' : c.status === 'busy' ? 'var(--warn)'
+       : (c.status === 'disabled' || c.status === 'unknown') ? 'var(--ink-3)' : 'var(--crit)';
+}
+function clockModel(c) {
+  return c.kind === 'electro' ? 'Electro Numerics (PL2303)' : c.kind === 'ch340' ? 'LED clock (CH340)' : 'not identified';
+}
+function clockWhy(c) {
+  return c.status === 'driving' ? 'driving'
+       : c.status === 'busy' ? 'port busy: ' + (c.error || 'could not open')
+       : c.status === 'disabled' ? 'disabled here'
+       : c.status === 'unknown' ? 'USB serial device, not identified as a clock'
+       : 'not plugged in';
+}
+
+async function startStop() {
+  const path = STATUS && STATUS.running ? '/api/stop' : '/api/start';
+  await fetch(path, { method: 'POST' });
+  setTimeout(pollStatus, 800);
+}
+
+async function setMode(mode) {
+  await popAct('/api/operation-mode', { mode }, mode === 'finishlynx' ? 'FinishLynx (event-aware)' : 'Passthrough');
+}
+
+/* ---------------- floating menu (pane More ▾) ---------------- */
+/* One floating menu element (#menu), outside the panes, so the once-a-
+   second pane refresh never closes it. items: [label, fn] or 'hr'. */
+function openMenu(btn, items) {
+  const m = document.getElementById('menu');
+  if (!m.hidden && MENU_BTN === btn) { closeMenu(); return; }
+  MENU_FNS = [];
+  m.innerHTML = items.map(it => {
+    if (it === 'hr') return '<hr>';
+    MENU_FNS.push(it[1]);
+    return `<button class="${it[2] || ''}" onclick="menuPick(${MENU_FNS.length - 1})">${it[0]}</button>`;
+  }).join('');
+  m.hidden = false; MENU_BTN = btn;
+  const r = btn.getBoundingClientRect(), w = m.offsetWidth, h = m.offsetHeight;
+  let left = Math.min(r.left + window.scrollX, window.scrollX + document.documentElement.clientWidth - w - 12);
+  let top = r.bottom + window.scrollY + 4;
+  if (r.bottom + h + 8 > window.innerHeight && r.top > h + 8) top = r.top + window.scrollY - h - 4;   // no room below: open upward
+  m.style.left = Math.max(12, left) + 'px'; m.style.top = top + 'px';
+}
+let MENU_FNS = [], MENU_BTN = null;
+function menuPick(i) { const fn = MENU_FNS[i]; closeMenu(); if (fn) fn(); }
+function closeMenu() { document.getElementById('menu').hidden = true; MENU_BTN = null; }
+document.addEventListener('click', e => {
+  if (!e.target.closest('#menu') && !(MENU_BTN && MENU_BTN.contains(e.target))) closeMenu();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+window.addEventListener('scroll', closeMenu);
+
+/* Meet actions sit on the toolbar as plain buttons again (2026-09-30: the
+   Meet ▾ / + Race ▾ menus hid Load, Export, Close meet and Races from .evt). */
+let MEET_DIR = '';
+let MEET_COUNTS = '';
+function showMeet(dir, counts) {
+  MEET_DIR = dir || '';
+  const name = MEET_DIR ? MEET_DIR.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : 'none loaded';
+  document.getElementById('meet-name').textContent = name;
+  if (counts != null) MEET_COUNTS = counts;
+  renderEvtSync();
+}
+/* The .evt is watched once a meet is loaded: MeetPro's late entries,
+   scratches and renamed events reach the panes by themselves. The meet
+   label says when that last happened; events new to the file light up
+   "Races from .evt" until the picker is opened. */
+let EVT_SEEN = '';
+function renderEvtSync() {
+  const s = DATA && DATA.evt_sync;
+  const label = document.getElementById('meet-label');
+  let status = MEET_COUNTS, title = MEET_DIR || 'No meet folder loaded';
+  if (s && MEET_DIR) {
+    const what = [];
+    if (s.entries_added || s.entries_removed) what.push(`+${s.entries_added}/−${s.entries_removed} entries`);
+    if (s.renamed && s.renamed.length) what.push(`renamed ${s.renamed.join('; ')}`);
+    if (s.new_races && s.new_races.length) what.push(`new: ${s.new_races.join(', ')}`);
+    status = [MEET_COUNTS, `.evt updated ${String(s.at).slice(11, 16)}`].filter(Boolean).join(' · ');
+    title += `\n${s.file} changed at ${String(s.at).slice(11)}: ${what.join(' · ')}`;
+  }
+  document.getElementById('meet-status').textContent = status;
+  label.title = title;
+  const btn = document.getElementById('btn-evt');
+  const fresh = s && s.new_races && s.new_races.length && s.at !== EVT_SEEN ? s.new_races.length : 0;
+  btn.textContent = fresh ? `Races from .evt · ${fresh} new` : 'Races from .evt';
+  btn.classList.toggle('primary', !!fresh);
+}
+function openLoadMeet() {
+  dlg(`<h3>Load meet folder</h3><div class="body">
+    <label>Lynx meet folder (holds lynx.ppl and lynx.evt)</label>
+    <input id="f-meetdir" value="${esc(MEET_DIR)}" placeholder="C:\\Lynx\\2026-09-26 Hilltop Invite" onkeydown="if (event.key === 'Enter') loadMeet(gv('f-meetdir'))">
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:6px">Loads the athletes. If the .evt has races without a pane, the race picker opens next. From then on, MeetPro's changes to the .evt/.ppl reach the panes by themselves.</div>
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn primary" onclick="loadMeet(gv('f-meetdir'))">Load</button>
+  </div>`);
+}
+async function loadMeet(dir) {
+  dir = (dir || '').trim();
+  if (!dir) return;
+  closeDlg();
+  const d = await (await fetch('/api/athletes/load', { method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ directory: dir }) })).json();
+  if (d.success) showMeet(dir, `${d.athletes_loaded} athletes · ${d.schools_loaded} schools`);
+  else alert(d.message || 'load failed');
+  await refresh();
+  // Scheduled races without a pane yet: let the operator pick which to time.
+  if (d.success && d.evt_missing > 0) openFromEvt();
+}
+
+/* Close out the meet: results + state are archived on disk first, then
+   every pane and read goes, plus the live read log and dedup memory. */
+function openCloseMeet() {
+  const races = DATA && DATA.enabled ? DATA.order.length : 0;
+  const finishers = DATA && DATA.enabled
+    ? DATA.order.reduce((n, k) => n + ((DATA.results[String(k)] || {finishers: []}).finishers.length), 0) : 0;
+  const held = DATA && DATA.enabled ? DATA.held.length : 0;
+  dlg(`<h3>Close meet</h3><div class="body">
+    <div style="display:flex;gap:18px;margin-bottom:8px">
+      <span><span class="num" style="font-size:18px">${races}</span> race pane${races === 1 ? '' : 's'}</span>
+      <span><span class="num" style="font-size:18px">${finishers}</span> finisher${finishers === 1 ? '' : 's'}</span>
+      <span><span class="num" style="font-size:18px">${held}</span> held read${held === 1 ? '' : 's'}</span></div>
+    This archives the meet CSV and the race state to <b>closed-meets\\&lt;date-time&gt;</b> next to the
+    console, then clears every race pane, every read (assigned, held and ignored), the live read log
+    and the reader's dedup memory.<br><br>
+    The meet folder and athlete list stay loaded. Afterwards, <b>Load meet…</b> for the
+    next meet and pick its races from the .evt.
+    ${DATA && DATA.lif_dirs && DATA.lif_dirs.rfid ? `<br><br>The merged .lif files MeetPro reads in
+      <span class="num">${esc(DATA.lif_dirs.rfid)}</span> are removed too (copies go into the archive), so the
+      next meet's events start clean. MeetPro's lynx.evt/ppl/sch there, and FinishLynx's own files, are left alone.` : ''}
+    ${DATA && DATA.enabled && races ? `<div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:8px">
+      Want a copy somewhere else too? <a href="#" onclick="exportMeet(); return false">Export meet…</a> first.</div>` : ''}
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn stop" id="close-meet-go" onclick="closeMeet()">Close meet &amp; clear</button>
+  </div>`);
+}
+async function closeMeet() {
+  const btn = document.getElementById('close-meet-go');
+  if (btn) { btn.disabled = true; btn.textContent = 'Closing…'; }
+  let d;
+  try {
+    const r = await fetch('/api/meet/close', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}' });
+    d = await r.json();
+  } catch (e) { d = { success: false, error: String(e) }; }
+  closeDlg();
+  if (!d.success) { alert(d.error || 'close failed - nothing was cleared'); return; }
+  // Fresh feed: the server's read log is gone too.
+  const t = document.getElementById('feed');
+  while (t.rows.length > 1) t.deleteRow(-1);
+  FEEDN = 0; document.getElementById('feed-count').textContent = '0';
+  await refresh(); pollStatus();
+  dlg(`<h3>Meet closed</h3><div class="body">${esc(d.message)}
+    ${d.archive_dir ? `<br><br>Archive: <span class="num">${esc(d.archive_dir)}</span>` : ''}
+    <br><br>Next: load the new meet's Lynx folder, then pick its races from the .evt (the picker
+    opens by itself when the folder has races without a pane).
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Close</button>
+    <button class="btn" onclick="closeDlg(); openFromEvt()">Races from .evt</button>
+    <button class="btn primary" onclick="openLoadMeet()">Load meet folder…</button>
+  </div>`);
+}
+
+function quickBib() {
+  dlg(`<h3>Quick bib &rarr; FinishLynx</h3><div class="body">
+    <label>Bib</label><input id="f-bib" autofocus>
+    <label>Clock time (HH:MM:SS.mmm) — leave blank for now</label>
+    <input id="f-clock" placeholder="now">
+    Sent to FinishLynx for the current heat.
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn primary" onclick="sendQuickBib()">Send</button>
+  </div>`);
+}
+
+async function sendQuickBib() {
+  const body = { bib: gv('f-bib') };
+  if (gv('f-clock').trim()) body.clock = gv('f-clock').trim();
+  closeDlg();
+  const d = await (await fetch('/api/manual-read', { method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })).json();
+  if (!d.success) alert(d.error || 'rejected');
+}
+
+/* ---------------------------- live feed + units ---------------------------- */
+
+/* Every read the console has heard, newest first, for the "Add athlete"
+   dialog's pick-list. Seeded from /api/reads at load, then fed by the socket. */
+let LIVE_READS = [];
+const LIVE_READS_MAX = 300;
+function noteLiveRead(d) {
+  LIVE_READS.unshift({ bib: String(d.bib), ts: d.full_timestamp || d.timestamp, time: d.time || d.timestamp,
+                       reader_id: d.reader_id, point: d.point, athlete: d.athlete || null });
+  if (LIVE_READS.length > LIVE_READS_MAX) LIVE_READS.length = LIVE_READS_MAX;
+}
+async function seedLiveReads() {
+  try {
+    const reads = await (await fetch(`/api/reads?detail=true&limit=${LIVE_READS_MAX}`)).json();
+    if (Array.isArray(reads))
+      LIVE_READS = reads.map(r => ({ bib: String(r.bib), ts: r.timestamp, time: r.time, reader_id: r.reader_id,
+                                     point: r.point || (r.relay_info && r.relay_info.split_point), athlete: r.athlete || null }));
+  } catch (e) {}
+}
+function onTagRead(d) {
+  FEEDN++;
+  noteLiveRead(d);
+  const live = document.getElementById('f-live');
+  if (live) live.innerHTML = liveReadsHtml(parseInt(live.dataset.key));   // Add dialog is open: keep its list fresh
+  document.getElementById('feed-count').textContent = FEEDN;
+  const t = document.getElementById('feed');
+  const name = d.athlete ? `${d.athlete.last_name || ''}${d.athlete.school ? ' · ' + d.athlete.school : ''}` : '';
+  const row = t.insertRow(1);
+  // a pass-numbered station shows "S1→S2": heard at S1, counted as Mile 2;
+  // "S2 ✕" is a crossing that is not a split (loop course), ignored
+  const pt = d.point === '-' ? `${d.reader_id} ✕`
+           : d.point && d.point !== d.reader_id ? `${d.reader_id}→${d.point}` : d.reader_id;
+  row.innerHTML = `<td class="bib num">${esc(d.bib)}</td><td>${esc(name)}</td>
+    <td><span class="pt" title="${esc(d.point ? pointLabel(d.point) : '')}">${esc(pt)}</span></td>
+    <td class="right num">${esc(d.timestamp)}</td>`;
+  while (t.rows.length > 60) t.deleteRow(-1);
+}
+
+async function pollUnits() {
+  let units;
+  try { units = await (await fetch('/api/remote/units')).json(); } catch (e) { return; }
+  UNITS = Array.isArray(units) ? units : [];
+  renderStations();
+  renderStationsChip();
+  if (POP.kind === 'stations') livePop();
+}
+
+/* The Stations panel: one row per reader - the local mat first, then every
+   LoRa station (heard, pre-registered, or merely configured) - with its
+   state and a Location select (where it stands: a mile marker, the finish,
+   one mat crossed more than once, or a loop-course skip). Changing a
+   location re-labels reads already heard, so it can be fixed mid-race. */
+function renderStations(force) {
+  const t = document.getElementById('units');
+  if (!t) return;
+  // don't yank a menu out from under the operator on a poll
+  if (!force && document.activeElement && t.contains(document.activeElement)) return;
+  const s = STATUS || {};
+  const rows = [];
+  rows.push({ id: LOCAL_READER, name: 'This PC', sub: CFG.reader && CFG.reader.type ? `${CFG.reader.type} reader` : 'local reader',
+              cls: !s.running ? '' : s.reader_connected ? 'good' : 'crit',
+              state: !s.running ? 'stopped' : s.reader_connected ? 'reading' : 'down',
+              age: null, pop: 'reader', port: null });
+  const seen = new Set([LOCAL_READER]);
+  for (const u of UNITS) {
+    const age = u.last_seen ? Math.round((Date.now() - new Date(u.last_seen)) / 1000) : null;
+    const fresh = age !== null && age < 40;
+    // reading = radio + RFID reader both up; idle = radio only (reader
+    // down or supervisor still retrying); anything stale/error = red.
+    rows.push({ id: u.reader_id, name: u.reader_id, sub: u.version ? `LoRa v${u.version}` : 'LoRa',
+                cls: !fresh ? 'crit' : u.state === 'reading' ? 'good' : u.state === 'idle' ? 'warn' : 'crit',
+                state: !fresh ? (age === null ? 'never heard' : 'silent') : (u.state || '?'),
+                age, pop: 'unit', port: u.reader_id });
+    seen.add(u.reader_id);
+  }
+  for (const id of Object.keys((DATA && DATA.reader_points) || {}))
+    if (!seen.has(id)) rows.push({ id, name: id, sub: 'LoRa (from config)', cls: '', state: 'not heard', age: null, pop: 'unit', port: id });
+  // Reader… swaps this popover for that reader's (anchored on the chip);
+  // its "All stations" button comes back here
+  t.innerHTML = '<tr><th>Station</th><th>Location</th></tr>' + rows.map(r => {
+    const fin = readerIsFinish(r.id), off = readerOff(r.id);
+    const port = r.port ? `'${esc(r.port)}'` : 'null';
+    return `<tr><td class="bib">${esc(r.name)} <span class="dot ${off ? '' : r.cls}"></span> <span style="font-weight:normal">${esc(r.state)}${r.age !== null && r.age >= 40 ? ` ${r.age} s` : ''}</span>
+        <div class="sub" style="font-weight:normal">${esc(r.sub)}
+          <button class="btn rdr pop-anchor" onclick="openPop('${r.pop}', ${port}, document.getElementById('chip-st'))" title="Antenna ports, power and commands">⚙ Reader…</button></div></td>
+      <td class="loc"><select class="${fin ? 'finish' : ''}" title="Where this station stands on the course" onchange="setLocation('${esc(r.id)}', this.value)">${locationOptions(r.id)}</select></td></tr>`;
+  }).join('');
+  const f = document.getElementById('units-foot');
+  if (f.querySelector('.msg-ok, .msg-bad')) return;           // a save message is showing
+  const multi = rows.some(r => (unitPoints(r.id) || []).length > 1);
+  f.hidden = !multi;
+  if (multi) f.innerHTML = `Same pass within <input type="number" min="0" max="3600" step="5" value="${esc(DATA && DATA.pass_window_sec != null ? DATA.pass_window_sec : 90)}" onchange="setPassWindow(this.value)"> s — a bib read again at one mat sooner than this is the same crossing, not the next location.`;
+}
+
+/* A station's reader config as last reported over the radio (CFGR strings:
+   antennas "1.3.5.7" or "" for every port; ports "8"; active "1.2.3.4"). */
+function unitReaderCfg(id) {
+  const u = UNITS.find(x => x.reader_id === id) || {};
+  return { unit: u, rc: (u.config_cache || {}).reader || null };
+}
+function unitPorts(str) { return str ? String(str).split('.').filter(Boolean).map(Number) : []; }
+function unitPollingText(rc) {
+  if (!rc) return 'not fetched yet';
+  const sel = unitPorts(rc.antennas), act = unitPorts(rc.active);
+  const every = rc.antennas === '' || rc.antennas === undefined;
+  return (every ? 'every port' : 'ports ' + sel.join(', '))
+       + (act.length ? ` <span style="color:var(--ink-3)">· polling ${act.join(', ')}</span>` : '');
+}
+
+/* ---------------------------- race panes ---------------------------- */
+
+function render() {
+  const root = document.getElementById('panes');
+  if (!DATA || !DATA.enabled) {
+    root.innerHTML = '<div class="note">Race manager is not enabled — set races.enabled: true in config.yaml (finish line mode).</div>';
+    return;
+  }
+  const html = panesHtml();
+  // render() runs every second, but the DOM is only rebuilt when the panes'
+  // content actually changed (a read landed, a status flipped): rebuilding
+  // a table while the operator is dragging it makes the scroll catch and
+  // lose its momentum. The per-second race clocks are updated in place
+  // (tickClocks), and a rebuild that falls inside an active scroll waits
+  // for the next tick. When it does rebuild, each table keeps its place.
+  if (html !== LAST_PANES_HTML && (Date.now() - LAST_PANE_SCROLL_AT > 500 || !LAST_PANES_HTML)) {
+    const scrolled = {};
+    root.querySelectorAll('.scroll[data-key]').forEach(el => { if (el.scrollTop) scrolled[el.dataset.key] = el.scrollTop; });
+    const before = paneBoxes(root);
+    root.innerHTML = html;
+    root.querySelectorAll('.scroll[data-key]').forEach(el => { if (scrolled[el.dataset.key]) el.scrollTop = scrolled[el.dataset.key]; });
+    LAST_PANES_HTML = html;
+    morphPanes(root, before);
+  }
+  tickClocks(root);
+}
+let LAST_PANES_HTML = '', LAST_PANE_SCROLL_AT = 0;
+
+/* Expand / collapse morph (2026-09-27): when a race changes size (card or
+   strip <-> pane, auto-big at the gun, the fold after Close race, Pin/Unpin,
+   Held/Ignored), its old box glides and resizes to where the race now lives
+   and the new one fades in under it with a short ring; every other race
+   slides to its new place instead of jumping. Only a size change animates -
+   a read landing never does. The race the operator just opened or folded is
+   scrolled into view if it landed off screen. */
+const MORPH_MS = 420, MORPH_EASE = 'cubic-bezier(.2, .7, .2, 1)';
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
+let FOLLOW = null;
+function paneBoxes(root) {
+  const boxes = {};
+  root.querySelectorAll('[data-race]').forEach(el => {
+    const r = el.getBoundingClientRect();
+    boxes[el.dataset.race] = { el, mode: el.dataset.mode, x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height };
+  });
+  return boxes;
+}
+function morphPanes(root, before) {
+  const after = paneBoxes(root);
+  const follow = FOLLOW && after[FOLLOW];
+  FOLLOW = null;
+  if (follow) {
+    const r = follow.el.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > innerHeight) follow.el.scrollIntoView({ block: r.height > innerHeight ? 'start' : 'nearest', behavior: 'smooth' });
+  }
+  const changed = Object.keys(after).filter(k => before[k] && before[k].mode !== after[k].mode);
+  if (!changed.length || REDUCED_MOTION.matches) return;
+  for (const [k, a] of Object.entries(after)) {
+    const b = before[k];
+    if (!b) continue;
+    if (changed.includes(k)) {
+      const ghost = document.createElement('div');
+      ghost.className = 'pane-ghost';
+      b.el.style.width = b.w + 'px';
+      ghost.appendChild(b.el);
+      const box = x => ({ left: x.x + 'px', top: x.y + 'px', width: x.w + 'px', height: x.h + 'px' });
+      Object.assign(ghost.style, box(b));
+      document.body.appendChild(ghost);
+      ghost.animate([Object.assign(box(b), { opacity: 1 }), Object.assign(box(a), { opacity: 1, offset: 0.8 }), Object.assign(box(a), { opacity: 0 })],
+                    { duration: MORPH_MS, easing: MORPH_EASE }).onfinish = () => ghost.remove();
+      a.el.animate([{ opacity: 0 }, { opacity: 0, offset: 0.6 }, { opacity: 1 }], { duration: MORPH_MS })
+        .onfinish = () => a.el.classList.add('landed');
+    } else if (Math.abs(b.x - a.x) + Math.abs(b.y - a.y) > 1) {
+      a.el.animate([{ transform: `translate(${b.x - a.x}px, ${b.y - a.y}px)` }, { transform: 'none' }], { duration: MORPH_MS, easing: MORPH_EASE });
+    }
+  }
+}
+document.addEventListener('scroll', e => {
+  if (e.target && e.target.classList && e.target.classList.contains('scroll')) LAST_PANE_SCROLL_AT = Date.now();
+}, true);
+/* The "+M:SS since the gun" readouts tick without touching anything else. */
+function tickClocks(root) {
+  const now = Date.now();
+  root.querySelectorAll('.clock[data-gun]').forEach(el => {
+    const gun = new Date(el.dataset.gun).getTime();
+    el.textContent = now > gun ? '+' + fmtElapsed((now - gun) / 1000).split('.')[0] : '';
+  });
+  root.querySelectorAll('[data-until]').forEach(el => {
+    el.textContent = Math.max(0, Math.ceil((+el.dataset.until - now) / 1000)) + ' s';
+  });
+}
+
+/* Panes sized by status (2026-09-26): a race with a gun that is not final
+   is ACTIVE - full size, big clock and counts, a taller table. Pending and
+   check-in races are one-line cards; finished races are one-line strips
+   (count, winner, top team, and an amber badge while anyone is missing a
+   split). Order: active, check-in, pending, final, then Held/Ignored.
+   Auto-focus: a race goes big by itself when its gun arms; after Close
+   race it stays open 8 s (Keep open cancels) and then folds to a strip.
+   Pin open keeps any race full size whatever its status (saved in this
+   browser); clicking a card or strip opens it until Collapse. */
+const CLOSE_DELAY_MS = 8000;
+const PREV_STATUS = {}, CLOSING = {}, OPENED = {};
+let PINS = {};
+try { PINS = JSON.parse(localStorage.getItem('console-pins') || '{}') || {}; } catch (e) { PINS = {}; }
+function savePins() { try { localStorage.setItem('console-pins', JSON.stringify(PINS)); } catch (e) {} }
+function togglePin(key) {
+  if (PINS[key]) delete PINS[key]; else PINS[key] = true;
+  delete CLOSING[key];
+  savePins(); render();
+}
+function keepOpen(key) { delete CLOSING[key]; PINS[key] = true; savePins(); render(); }
+function openPane(key) { OPENED[key] = true; FOLLOW = String(key); render(); }
+function collapsePane(key) { FOLLOW = String(key); delete OPENED[key]; delete PINS[key]; delete CLOSING[key]; savePins(); render(); }
+let HELD_OPEN = { held: false, ignored: false };
+function toggleHeld(which) { FOLLOW = which; HELD_OPEN[which] = !HELD_OPEN[which]; render(); }
+
+function paneMode(race) {
+  const k = race.key;
+  if (race.status !== 'final' && (race.status === 'racing' || race.gun)) return 'big';
+  if (PINS[k] || OPENED[k] || CLOSING[k]) return 'full';
+  return race.status === 'final' ? 'strip' : 'card';
+}
+function panesHtml() {
+  const now = Date.now();
+  // race keys restart at 1 after Close meet: drop pins for races that are gone
+  let pruned = false;
+  for (const k of Object.keys(PINS)) if (!DATA.races[k]) { delete PINS[k]; pruned = true; }
+  if (pruned) savePins();
+  // a race seen going final here stays open CLOSE_DELAY_MS before it folds
+  for (const key of DATA.order) {
+    const r = DATA.races[String(key)];
+    if (r.status === 'final' && PREV_STATUS[key] && PREV_STATUS[key] !== 'final' && !PINS[key]) CLOSING[key] = now + CLOSE_DELAY_MS;
+    if (r.status !== 'final') delete CLOSING[key];
+    PREV_STATUS[key] = r.status;
+  }
+  for (const k of Object.keys(CLOSING)) if (CLOSING[k] <= now) delete CLOSING[k];
+  const rank = { big: 0, full: 1, card: 2, strip: 3 }, srank = { racing: 0, checkin: 1, pending: 2, final: 3 };
+  const races = DATA.order.map((k, i) => ({ r: DATA.races[String(k)], i }))
+    .map(x => Object.assign(x, { mode: paneMode(x.r) }))
+    .sort((a, b) => (rank[a.mode] - rank[b.mode]) || (srank[a.r.status] - srank[b.r.status]) || (a.i - b.i));
+  const res = r => DATA.results[String(r.key)];
+  const active = races.filter(x => x.mode === 'big' || x.mode === 'full');
+  const cards = races.filter(x => x.mode === 'card'), strips = races.filter(x => x.mode === 'strip');
+  let html = '';
+  if (active.length) html += `<div class="grid-active">${active.map(x => paneHtml(x.r, res(x.r), x.mode)).join('')}</div>`;
+  if (cards.length) html += `<div class="grid-cards">${cards.map(x => cardHtml(x.r)).join('')}</div>`;
+  html += strips.map(x => stripHtml(x.r, res(x.r))).join('');
+  html += HELD_OPEN.held ? heldPaneHtml('Held reads', DATA.held, 'held reads auto-promote when their bib finishes', 'held')
+                         : heldStripHtml('Held reads', DATA.held, 'held');
+  if (DATA.ignored.length) html += HELD_OPEN.ignored ? heldPaneHtml('Ignored reads', DATA.ignored, 'manually removed — restorable', 'ignored')
+                                                     : heldStripHtml('Ignored reads', DATA.ignored, 'ignored');
+  return html;
+}
+const gtag = g => `<span class="g ${g}" title="${g === 'X' ? 'Mixed: takes any athlete' : g === 'U' ? 'No gender: roster only' : ''}">${g === 'F' ? 'G' : g === 'M' ? 'B' : g === 'X' ? 'GB' : '?'}</span>`;
+/* Pending / check-in race folded to one line; click it to open the pane. */
+function cardHtml(race) {
+  const k = race.key;
+  return `<div data-race="${k}" data-mode="card" class="ccard ${race.status}" onclick="if (!event.target.closest('button')) openPane(${k})" title="${race.status === 'checkin' ? 'Checking in: the next gun arms this race. ' : ''}Click to open this race">
+    ${gtag(race.gender || 'U')}<div><h2>${esc(race.name)}</h2><div class="sub">Evt ${race.event}-${race.round}-${race.heat} · ${race.status === 'checkin' ? `<b style="color:var(--boys)">${race.roster_count} checked in</b>` : `roster ${race.roster_count}`}</div></div>
+    <span style="margin-left:auto"></span>
+    <button class="btn small" onclick="openScoring(${k})" title="Scoring, gender, pace, delete pane">Settings</button>
+    <button class="btn small" onclick="openGun(${k})">Gun ▾</button>
+    ${race.status === 'pending' ? `<button class="btn" title="Open check-in for this race" onclick="api('/api/races/${k}/status',{status:'checkin'})">Check-in</button>` : ''}
+    <span class="badge ${race.status}" style="margin-left:0">${race.status.toUpperCase()}</span></div>`;
+}
+/* Finished race folded to one line: the count, the winner, the top team,
+   and the missing-split badge (so folding never hides work). */
+function stripHtml(race, res) {
+  const k = race.key, f = res ? res.finishers : [], w = f[0];
+  const miss = f.filter(r => (r.missing || []).length).length;
+  // finishers FinishLynx has no time for (a straggler after the event was
+  // done there): open the race, the finish cell is a "Save to .lif" button
+  const untimed = f.filter(r => r.finish && r.finish.fl_untimed).length;
+  return `<div data-race="${k}" data-mode="strip" class="strip" onclick="if (!event.target.closest('button')) openPane(${k})" title="Click to open this race">
+    <span class="chev">▸</span>${gtag(race.gender || 'U')}<h2>${esc(race.name)}</h2>
+    <span class="num">${f.length}/${race.roster_count} finished</span>
+    ${w ? `<span>1st <span style="color:var(--ink)">${esc(w.last_name)}</span> <span class="num">${fmtElapsed(w.finish.elapsed)}</span></span>` : ''}
+    ${res && res.teams.length ? `<span>${esc(res.teams[0].team)} <span class="num" style="color:var(--ink)">${res.teams[0].score}</span></span>` : ''}
+    ${miss ? `<span class="flag miss" style="font-size:11px;padding:1px 6px" title="Open the race to fix: Needs attention at the top">⚠ ${miss} missing a split</span>` : ''}
+    ${untimed ? `<span class="btn lifsave" style="cursor:pointer" title="${untimed} finisher${untimed > 1 ? 's' : ''} the mat read ${untimed > 1 ? 'are' : 'is'} not in MeetPro's .lif (no FinishLynx time, or not on the start list). Open the race and decide: their finish time is a Save to .lif button.">${untimed} waiting for Save to .lif</span>` : ''}
+    <span class="acts">
+      <button class="btn" onclick="saveAs('/api/races/${k}/export.csv', '${esc(csvName(race))}', 'CSV file', 'text/csv', '.csv')">Export CSV…</button>
+      ${f.length ? `<button class="btn" onclick="openSaveLif(${k})">Save .lif…</button>` : ''}
+      <button class="btn" onclick="api('/api/races/${k}/status',{status:'racing'})">Reopen</button>
+      <span class="badge final" style="margin-left:0">FINAL</span></span></div>`;
+}
+function heldStripHtml(title, reads, which) {
+  const newest = reads.slice().sort((a, b) => new Date(b.clock) - new Date(a.clock))[0];
+  return `<div data-race="${which}" data-mode="strip" class="strip${reads.length && which === 'held' ? ' heldon' : ''}" onclick="toggleHeld('${which}')" title="Click to open">
+    <span class="chev">▸</span><h2>${title}</h2>
+    ${newest ? `<span class="reason" style="font-size:12px">newest ${esc(newest.bib)} · ${esc(newest.reason)}</span>` : '<span class="sub">none</span>'}
+    <span class="acts"><span class="badge ${which === 'held' ? 'held' : 'pending'}" style="margin-left:0">${reads.length}</span></span></div>`;
+}
+/* The pane's More ▾ menu (floating, so a re-render does not close it) */
+function paneMenu(btn, key) {
+  const race = DATA.races[String(key)], res = DATA.results[String(key)] || { finishers: [] };
+  openMenu(btn, [
+    ['Export CSV…', () => saveAs(`/api/races/${key}/export.csv`, csvName(race), 'CSV file', 'text/csv', '.csv')],
+    ...(res.finishers.length ? [['Save .lif… (for MeetPro)', () => openSaveLif(key)]] : []),
+    ...(race.status === 'pending' ? [['Close race', () => closeRace(key)]] : []),
+  ]);
+}
+
+/* Per-pane table order chosen with the tile arrows: null = place order
+   (finishers by place, then on course); 'finish' asc/desc = by finish time
+   with the on-course rows kept last; 'team' asc/desc = grouped by team in
+   alphabetical order, place order inside each team, no-team rows last. */
+const SORT = {};
+function setSort(key, by, dir) {
+  const cur = SORT[key];
+  SORT[key] = cur && cur.by === by && cur.dir === dir ? null : { by, dir };
+  render();
+}
+function sortRows(finishers, onCourse, sort) {
+  if (!sort) return finishers.concat(onCourse);
+  if (sort.by === 'finish') {
+    const f = finishers.slice().sort((a, b) => a.finish.elapsed - b.finish.elapsed);
+    return (sort.dir === 'desc' ? f.reverse() : f).concat(onCourse);
+  }
+  const rows = finishers.concat(onCourse);
+  const team = r => (r.school || '').trim().toLowerCase();
+  const dir = sort.dir === 'desc' ? -1 : 1;
+  return rows.map((r, i) => [r, i]).sort(([a, ia], [b, ib]) => {
+    const ta = team(a), tb = team(b);
+    if (!ta !== !tb) return ta ? -1 : 1;             // rows without a team last
+    if (ta !== tb) return dir * (ta < tb ? -1 : 1);
+    return ia - ib;                                   // place order inside a team
+  }).map(([r]) => r);
+}
+function sortArrows(key, by, title) {
+  const cur = SORT[key], on = d => cur && cur.by === by && cur.dir === d ? ' on' : '';
+  return `<span class="sort" title="${title}"><b class="${on('asc')}" onclick="setSort(${key}, '${by}', 'asc')">▲</b><b class="${on('desc')}" onclick="setSort(${key}, '${by}', 'desc')">▼</b></span>`;
+}
+
+function paneHtml(race, res, mode) {
+  const g = race.gender || 'U', k = race.key, big = mode === 'big';
+  const finishers = res ? res.finishers : [];
+  const onCourse = res ? res.on_course : [];
+  // the whole race: every finisher in place order, then everyone still on
+  // course - one column per split point plus the finish (the table scrolls);
+  // the Finish / Top team tile arrows re-order it
+  // + everyone checked in (or on the roster) with no read yet, at the bottom,
+  // so the table is the whole field; each moves up when a split or the
+  // finish is read (2026-09-30)
+  const notSeen = res ? (res.not_seen || []) : [];
+  const rows = sortRows(finishers, onCourse, SORT[race.key]).concat(notSeen);
+  const pts = (DATA.points || []).filter(p => !p.finish);
+  // flash for 0.9 s after a read lands in this race; the pane is re-rendered
+  // every second, so the animation is resumed from where it was
+  const flashAt = FLASH[race.key] || 0, since = Date.now() - flashAt;
+  const flash = since < 900 ? ` flash" style="animation-delay:-${since}ms` : '';
+  // the newest finisher (finish within the last 8 s) is tinted green
+  const newest = race.status === 'racing' ? finishers.filter(r => r.finish && Date.now() - new Date(r.finish.clock) < 8000).map(r => r.bib) : [];
+  const closing = CLOSING[k], canFold = !big && OPENED[k] && !PINS[k];
+  return `
+  <div data-race="${k}" data-mode="${mode}" class="pane${race.status === 'racing' ? ' racing' : ''}${big ? ' big' : ''}${flash}">
+    <div class="pane-head${canFold ? ' fold' : ''}"${canFold ? ` onclick="if (!event.target.closest('button')) collapsePane(${k})" title="Click to fold this race back to one line"` : ''}>
+      ${gtag(g)}
+      <div><h2>${esc(race.name)}</h2><div class="sub">Evt ${race.event}-${race.round}-${race.heat}</div></div>
+      <span style="margin-left:auto"></span>
+      <button class="btn small${PINS[k] ? ' on' : ''}" onclick="togglePin(${k})" title="${PINS[k] ? 'Pinned: stays full size whatever its status. Click to unpin.' : 'Keep this race full size whatever its status'}">${PINS[k] ? '● Pinned' : 'Pin open'}</button>
+      <button class="btn small" onclick="openScoring(${k})" title="Scoring ${race.scoring.scorers}+${race.scoring.displacers} · fastest pace ${fmtPace(race.fastest_pace || DATA.fastest_pace_default)}/mi · gender · delete pane">Settings</button>
+      <span class="badge ${race.status}" style="margin-left:0">${race.status.toUpperCase()}</span>
+    </div>
+    ${closing ? `<div class="countdown">Closed · folds to one line in <b class="num" data-until="${closing}"></b><button class="btn" onclick="keepOpen(${k})">Keep open</button></div>` : ''}
+    <div class="gunrow">
+      <span>Gun <span class="num">${race.gun ? fmtClock(race.gun) : '—'}</span>
+        <span style="color:var(--ink-3)">${esc(race.gun_source)}</span>
+        <button class="btn small" onclick="openGun(${race.key})">Gun ▾</button></span>
+      <span class="clock num"${race.gun ? ` data-gun="${esc(race.gun)}"` : ''}></span>
+      ${race.gun && race.status !== 'final' ? (STATUS && STATUS.led_clock_override && STATUS.led_clock_override.mode === 'race' && STATUS.led_clock_override.race === race.key
+        ? `<button class="btn small" style="color:var(--good)" title="The LED clocks are pinned to this race. Click to go back to automatic." onclick="unpinClocks()">● on clocks</button>`
+        : `<button class="btn small" title="Pin every LED clock (finish + split stations) to this race's time, e.g. for a straggler while the next race runs. Changes no gun." onclick="pinClocks(${race.key})">Show on clocks</button>`) : ''}
+    </div>
+    ${outageNote(race, STATUS)}
+    ${attentionHtml(race, res)}
+    <div class="summ">
+      <span><span class="n num">${finishers.length}</span> / ${race.roster_count} finished ${sortArrows(k, 'finish', 'Order the table by finish time: ▲ fastest first, ▼ slowest first (click again for place order)')}</span>
+      <span><span class="n num">${onCourse.length}</span> on course</span>
+      <span title="${race.status === 'final' ? 'On the roster (checked in) but never read in this race' : 'Checked in, not read on the course yet - listed at the bottom of the table'}"><span class="n num">${notSeen.length}</span> ${race.status === 'final' ? 'no-show' : 'not seen yet'}</span>
+      ${res && res.film ? filmPaneHtml(res.film) : ''}
+      <span class="team">Top team <span class="n num">${res && res.teams.length ? res.teams[0].score : '—'}</span>${res && res.teams.length ? ' ' + esc(res.teams[0].team) : ''}
+        ${sortArrows(k, 'team', 'Group the table by team: ▲ A to Z, ▼ Z to A (click again for place order)')}</span>
+    </div>
+    <div class="scroll" data-key="race-${k}"><table>
+      <tr><th>Pl</th><th>Bib</th><th>Athlete</th>${pts.map(p => `<th class="right">${esc(p.label)}</th>`).join('')}<th class="right">Finish</th><th></th></tr>
+      ${rows.map(r => rowHtml(k, r, pts, newest.includes(r.bib))).join('')}
+    </table>
+    ${res && res.teams.length ? teamsHtml(res.teams) : ''}</div>
+    <div class="pane-foot">
+      <button class="btn" onclick="openAdd(${k})">Add athlete</button>
+      ${race.status === 'pending' ? `<button class="btn" title="Open check-in for this race" onclick="api('/api/races/${k}/status',{status:'checkin'})">Check-in</button>`
+        : race.status !== 'final' ? `<button class="btn" onclick="closeRace(${k})">Close race</button>`
+        : `<button class="btn" onclick="api('/api/races/${k}/status',{status:'racing'})">Reopen</button>`}
+      <button class="btn" onclick="paneMenu(this, ${k})" title="Export CSV, Save .lif for MeetPro">More ▾</button>
+    </div>
+  </div>`;
+}
+
+/* "Save to .lif": FinishLynx lists the athlete without a time; the timer
+   decides whether the mat read is a real finish (never automatic - a DNF
+   walking past the mat must not become a result). */
+async function chipToLif(key, bib, on) {
+  const res = DATA.results[String(key)] || { finishers: [] }, r = res.finishers.find(x => x.bib === bib);
+  const t = r && r.finish ? fmtElapsed(r.finish.elapsed) : '';
+  if (on && !confirm(`Put bib ${bib}${r ? ' ' + r.last_name : ''}'s chip time ${t} into the .lif MeetPro reads?\n\nFinishLynx has no time for this athlete. Only do this if it is a real finish, not someone walking past the mat.`)) return;
+  if (!on && !confirm(`Take bib ${bib}'s chip time back out of the .lif? MeetPro then shows them without a time again.`)) return;
+  await api(`/api/races/${key}/chip_lif`, { bib, on });
+}
+
+function deletePane(key) {
+  const r = DATA.races[String(key)], res = DATA.results[String(key)] || { finishers: [], on_course: [] };
+  const n = res.finishers.length + res.on_course.length;
+  if (!confirm(`Delete the "${r.name}" pane?` + (n ? ` Its ${n} athlete(s)' reads move to the Held pane (nothing is lost).` : ''))) return;
+  api(`/api/races/${key}/delete`);
+}
+
+/* One row per athlete with every split in its own column. A time reads
+   "6:12.3", "~6:12.3" when estimated, "6:12.3*" when hand-edited, "m" flag
+   when typed. A finisher missing a split the race has gets a clickable ⚠
+   in that column; a runner still on course shows "—" for what is to come. */
+function cellHtml(s) {
+  if (!s) return '—';
+  return `${s.estimated ? '~' : ''}${fmtElapsed(s.elapsed)}${s.overridden ? '*' : ''}${s.manual && !s.estimated ? ' <span class="flag">m</span>' : ''}${s.fl_only ? ' <span class="flag miss" title="Only in FinishLynx: the reader has no finish for this athlete. The time is FinishLynx&#39;s, from its saved .lif.">FL only</span>' : ''}${s.corrected ? ` <span class="flag" title="mat read ${fmtElapsed(s.raw_elapsed)}${s.antenna ? ' on A' + s.antenna : ''} − film offset ${(s.correction || 0).toFixed(3)} s">f</span>` : ''}${s.not_in_finishlynx ? ' <span class="flag miss" title="Finished while another race was running: kept out of FinishLynx (it would have landed in that race). It is in this pane and the .lif for MeetPro; add it in FinishLynx by hand if you want it there.">not in FL</span>' : ''}`;
+}
+function rowHtml(raceKey, r, pts, newest) {
+  if (r.checked_in !== undefined) {
+    // on the roster, nothing read in this race yet
+    return `<tr class="notseen">
+      <td class="num"></td>
+      <td class="bib num">${esc(r.bib)}</td>
+      <td>${esc(r.last_name)}${r.school ? ' · ' + esc(r.school) : ''}</td>
+      ${(pts || []).map(() => '<td class="right num split">—</td>').join('')}
+      <td class="right split">${r.checked_in ? `checked in <span class="num">${fmtClock(r.checked_in).slice(0, 8)}</span>` : 'on roster'}</td>
+      <td><button class="btn small" title="Add a time for this athlete (hand time, coach's split)" onclick="openAdd(${raceKey}, '${esc(r.bib)}')">+ time</button></td>
+    </tr>`;
+  }
+  const fin = r.finish;
+  const missing = r.missing || [];
+  const cells = (pts || []).map(p => {
+    const s = r.splits.find(x => x.point === p.id);
+    if (s) return `<td class="right num split">${cellHtml(s)}</td>`;
+    if (missing.includes(p.id))
+      return `<td class="right num split"><span class="miss" title="No ${esc(p.label)} for this finisher — click to add it (estimate offered)" onclick="openAdd(${raceKey}, '${esc(r.bib)}', '${esc(p.id)}', true)">⚠ add</span></td>`;
+    return `<td class="right num split">—</td>`;
+  }).join('');
+  return `<tr${missing.length ? ' class="review"' : newest ? ' class="newest"' : ''}>
+    <td class="num">${r.place || ''}</td>
+    <td class="bib num">${esc(r.bib)}</td>
+    <td>${esc(r.last_name)}${r.school ? ' · ' + esc(r.school) : ''}</td>
+    ${cells}
+    <td class="right num split">${!fin ? '—'
+      : fin.fl_untimed ? `<button class="btn lifsave" onclick="chipToLif(${raceKey}, '${esc(r.bib)}', true)" title="${fin.lif_why === 'off_list'
+          ? 'Not on this race&#39;s start list (the .evt entries / check-in), and FinishLynx does not have them: nothing of theirs goes to MeetPro. If this is a real finisher (a missed check-in, a late entry), click to put their chip time and splits into the .lif.'
+          : 'FinishLynx lists this athlete without a time, so MeetPro gets no result for them. If this finish-mat read is a real finish (not someone walking past the mat), click to put the chip time into the .lif MeetPro reads.'}">${fmtElapsed(fin.elapsed)} · Save to .lif</button>`
+      : `<span class="pt fin">${cellHtml(fin)}</span>${fin.chip_in_lif ? ` <span class="flag" style="cursor:pointer" title="Chip time put into the .lif by hand (FinishLynx has no time for this athlete). Click to take it back out." onclick="chipToLif(${raceKey}, '${esc(r.bib)}', false)">in .lif</span>` : ''}`}</td>
+    <td><button class="btn small" onclick="openAthlete(${raceKey}, '${esc(r.bib)}')">⋯</button></td>
+  </tr>`;
+}
+
+function teamsHtml(teams) {
+  return `<div class="teams"><table>
+    <tr><th></th><th>Team</th><th class="right">Score</th><th class="right">Places</th></tr>
+    ${teams.map(t => `<tr><td class="num">${t.rank}</td><td>${esc(t.team)}</td>
+      <td class="right num">${t.score}</td><td class="right num">${t.places.join('-')}</td></tr>`).join('')}
+  </table></div>`;
+}
+
+function heldPaneHtml(title, reads, note, key) {
+  // newest read at the top: the one the operator is most likely looking for
+  reads = reads.slice().sort((a, b) => new Date(b.clock) - new Date(a.clock));
+  return `
+  <div class="pane" data-race="${key}" data-mode="pane">
+    <div class="pane-head fold" onclick="if (!event.target.closest('button')) toggleHeld('${key}')" title="Click to fold"><div><h2>${title}</h2></div>
+      <span style="margin-left:auto"></span>
+      <span class="badge held" style="margin-left:0">${reads.length}</span></div>
+    <div class="scroll" data-key="${key || 'pool'}"><table>
+      <tr><th>Bib</th><th>Athlete</th><th>G</th><th>Team</th><th>Pt</th><th class="right">Clock</th><th>Why</th><th></th></tr>
+      ${reads.map(r => `<tr>
+        <td class="bib num">${esc(r.bib)}</td>
+        <td>${r.last_name ? esc(r.last_name) + (r.first_name ? ', ' + esc(r.first_name) : '') : '<span style="color:var(--ink-3)">not in the .ppl</span>'}</td>
+        <td>${r.gender ? gtag(r.gender) : ''}</td>
+        <td>${esc(r.school || '')}</td>
+        <td><span class="pt">${esc(r.label)}</span></td>
+        <td class="right num">${fmtClock(r.clock)}</td>
+        <td><span class="reason">${esc(r.reason)}</span></td>
+        <td><button class="btn small" onclick="openAssign(${r.id})">Assign ▾</button></td>
+      </tr>`).join('')}
+    </table></div>
+    <div class="note">${note}</div>
+  </div>`;
+}
+
+/* ------------------------------ dialogs ------------------------------ */
+
+function dlg(html) { const d = document.getElementById('dlg'); d.innerHTML = html; d.showModal(); }
+function closeDlg() { document.getElementById('dlg').close(); }
+function gv(id) { return document.getElementById(id).value; }
+function raceOptions(exceptKey) {
+  return DATA.order.filter(k => k !== exceptKey).map(k => {
+    const r = DATA.races[String(k)];
+    return `<option value="${k}">${esc(r.name)} (${r.status})</option>`;
+  }).join('');
+}
+
+function recentStartOptions() {
+  const starts = (STATUS && STATUS.recent_starts) || [];
+  return '<option value="">— wait for the next start signal —</option>' +
+    starts.map(s => startOption(s)).join('');
+}
+function gunSourceFor(ts) {
+  const s = ((STATUS && STATUS.recent_starts) || []).find(x => x.ts === ts);
+  return s ? s.source : 'picked at creation';
+}
+
+function openCreate() {
+  dlg(`<h3>New race</h3><div class="body">
+    <label>Name</label><input id="f-name" placeholder="Girls Varsity 5K">
+    <label>FinishLynx event # / round / heat</label>
+    <div style="display:flex;gap:8px">
+      <input id="f-event" type="number" value="1" placeholder="event">
+      <input id="f-round" type="number" value="1" placeholder="round">
+      <input id="f-heat" type="number" value="1" placeholder="heat"></div>
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3)">Or use <b>Races from .evt</b> to take these from the meet file.</div>
+    <label>Gender</label><select id="f-gender">
+      <option value="F">Girls</option><option value="M">Boys</option>
+      <option value="X">Mixed — any athlete</option><option value="">— (roster only)</option></select>
+    <label>Start time</label><select id="f-gun">${recentStartOptions()}</select>
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3)">Starts already heard from the camera or FinishLynx's clock. Leave on "wait" and the next gun arms this race automatically; every start also appears in the pane's Gun ▾ picker.</div>
+    <label>Scorers / displacers</label>
+    <div style="display:flex;gap:8px">
+      <input id="f-scorers" type="number" value="5"><input id="f-displacers" type="number" value="2"></div>
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn primary" onclick="closeDlg();api('/api/races/create',{
+      name: gv('f-name'), event: gv('f-event'), round: gv('f-round') || 1, heat: gv('f-heat') || 1,
+      gender: gv('f-gender'), scorers: gv('f-scorers'), displacers: gv('f-displacers'),
+      gun: gv('f-gun'), gun_source: gunSourceFor(gv('f-gun'))})">Create</button>
+  </div>`);
+}
+
+/* Race picker fed by the meet folder's .evt: one row per event/round/heat
+   with a checkbox. Only the ticked races get a pane (a track .evt lists
+   every event, most of which never cross the RFID mat). A pane carries
+   the .evt's event numbers so FinishLynx's armed event, LapTime packets
+   and the .lif file name all line up. */
+async function openFromEvt() {
+  let d;
+  try { d = await (await fetch('/api/evt/races')).json(); } catch (e) { d = { success: false, error: String(e) }; }
+  if (!d.success) {
+    dlg(`<h3>Races from .evt</h3><div class="body">${esc(d.error || 'No .evt found')}.<br>
+      <span class="hint">Load the Lynx meet folder first.</span></div>
+      <div class="foot"><button class="btn" onclick="closeDlg()">Close</button><button class="btn primary" onclick="openLoadMeet()">Load meet folder…</button></div>`);
+    return;
+  }
+  EVT_RACES = d.races;
+  if (DATA && DATA.evt_sync) { EVT_SEEN = DATA.evt_sync.at; renderEvtSync(); }
+  const missing = d.races.filter(r => !r.pane_key).length;
+  const rows = d.races.map((r, i) => `
+    <tr class="${r.pane_key ? '' : 'pick'}" ${r.pane_key ? '' : `onclick="evtToggleRow(event, ${i})"`} style="${r.pane_key ? 'color:var(--ink-3)' : 'cursor:pointer'}">
+      <td>${r.pane_key ? '' : `<input type="checkbox" class="evt-pick" data-i="${i}" onchange="evtCount()">`}</td>
+      <td class="num">${r.event}-${r.round}-${r.heat}</td>
+      <td>${r.gender ? `<span class="g ${r.gender}">${r.gender}</span> ` : ''}${esc(r.name)}</td>
+      <td class="right num">${r.entries || ''}</td>
+      <td class="right">${r.pane_key ? '<span class="pt fin">has pane</span>'
+        : `<button class="btn small" id="evt-add-${i}" onclick="event.stopPropagation(); addFromEvt(${i})">Add</button>`}</td>
+    </tr>`).join('');
+  dlg(`<h3>Races from .evt <span class="sub" style="font-weight:400;color:var(--ink-3)">${esc(d.file)} · ${d.races.length} events · ${d.races.length - missing} with panes</span></h3>
+    <div class="body" style="padding:0"><div class="scroll" style="max-height:60vh"><table>
+      <tr><th>${missing ? `<input type="checkbox" id="evt-all" title="select every race without a pane" onchange="evtSelectAll(this.checked)">` : ''}</th>
+          <th>Evt</th><th>Race</th><th class="right">Entries</th><th></th></tr>${rows}
+    </table></div>
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3);padding:8px 14px">Tick the races the RFID mat will time, then <b>Add selected</b>. Rows marked "has pane" are already on the console; delete a pane from its footer if it should not be.</div></div>
+    <div class="foot">
+      <button class="btn" onclick="closeDlg()">Close</button>
+      ${missing ? `<button class="btn primary" id="evt-add-sel" onclick="addSelectedFromEvt()" disabled>Add selected</button>` : ''}
+    </div>`);
+}
+let EVT_RACES = [];
+function evtToggleRow(ev, i) {
+  if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON') return;
+  const cb = document.querySelector(`.evt-pick[data-i="${i}"]`);
+  if (cb) { cb.checked = !cb.checked; evtCount(); }
+}
+function evtSelectAll(on) {
+  document.querySelectorAll('.evt-pick').forEach(cb => { cb.checked = on; });
+  evtCount();
+}
+function evtCount() {
+  const n = document.querySelectorAll('.evt-pick:checked').length;
+  const b = document.getElementById('evt-add-sel');
+  if (b) { b.disabled = !n; b.textContent = n ? `Add ${n} selected` : 'Add selected'; }
+  const all = document.getElementById('evt-all');
+  if (all) all.checked = n > 0 && n === document.querySelectorAll('.evt-pick').length;
+}
+async function addFromEvt(i) {
+  const r = EVT_RACES[i];
+  if (!r || r.pane_key) return;
+  const btn = document.getElementById(`evt-add-${i}`);
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const res = await api('/api/races/create', {
+    name: r.name, event: r.event, round: r.round, heat: r.heat, gender: r.gender,
+    distance: r.distance, scorers: 5, displacers: 2, entries: r.bibs || [] });
+  if (res && res.key) {
+    r.pane_key = res.key;
+    if (btn) btn.outerHTML = '<span class="pt fin">has pane</span>';
+    const cb = document.querySelector(`.evt-pick[data-i="${i}"]`);
+    if (cb) cb.remove();
+    evtCount();
+  } else if (btn) { btn.disabled = false; btn.textContent = 'Add'; }
+}
+async function addSelectedFromEvt() {
+  const picked = [...document.querySelectorAll('.evt-pick:checked')].map(cb => parseInt(cb.dataset.i));
+  const b = document.getElementById('evt-add-sel');
+  if (b) { b.disabled = true; b.textContent = 'Adding…'; }
+  for (const i of picked) await addFromEvt(i);   // schedule order, one at a time
+  closeDlg();
+}
+
+function fmtPace(sec) {
+  if (sec == null) return '—';
+  const s = Math.round(sec);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+/* Race settings: scoring, who the pane accepts by gender, and the fastest
+   pace anyone in it could run - which sets the earliest a read at each
+   point can be (Mile 1 before 4:00 at 4:00/mile is a spectator, not a
+   split). Changing gender or pace re-checks the Held pane. */
+function openScoring(key) {
+  const r = DATA.races[String(key)];
+  const pace = r.fastest_pace || DATA.fastest_pace_default;
+  const floors = (DATA.points || []).map(p => `${esc(p.label)} ≥ ${fmtPace(r.floors ? r.floors[p.id] : null)}`).join(' · ');
+  dlg(`<h3>Race settings — ${esc(r.name)}</h3><div class="body">
+    <label>Scorers / displacers</label>
+    <div style="display:flex;gap:8px">
+      <input id="f-scorers" type="number" value="${r.scoring.scorers}"><input id="f-displacers" type="number" value="${r.scoring.displacers}"></div>
+    <label>Takes unrostered athletes who are</label><select id="f-gender">
+      <option value="F" ${r.gender === 'F' ? 'selected' : ''}>Girls</option>
+      <option value="M" ${r.gender === 'M' ? 'selected' : ''}>Boys</option>
+      <option value="X" ${r.gender === 'X' ? 'selected' : ''}>Mixed — any athlete in the meet file</option>
+      <option value="" ${!r.gender ? 'selected' : ''}>— nobody (roster / chute only)</option></select>
+    <label>Fastest pace anyone here could run (min:sec per mile)</label>
+    <input id="f-pace" value="${r.fastest_pace ? fmtPace(r.fastest_pace) : ''}" placeholder="${fmtPace(DATA.fastest_pace_default)} (default)" oninput="paceTyped(${key})">
+    <div id="f-floors" class="hint" style="font-size:11.5px;color:var(--ink-3)">Earliest a read counts: ${floors}</div>
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:4px">Reads sooner after the gun than that are held as "too early" (a spectator brushing a mat, a stale read) instead of becoming a split, rostered or not. Blank = the default from config.</div>
+  </div><div class="foot">
+    <button class="btn stop" style="margin-right:auto" title="Remove this pane; its reads move to Held" onclick="closeDlg(); deletePane(${key})">Delete pane…</button>
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn primary" onclick="closeDlg();api('/api/races/${key}/scoring',
+      {scorers: gv('f-scorers'), displacers: gv('f-displacers'), gender: gv('f-gender'), fastest_pace: gv('f-pace').trim()})">Save</button>
+  </div>`);
+}
+function paceTyped(key) {
+  const r = DATA.races[String(key)], box = document.getElementById('f-floors');
+  const secs = parseElapsed(gv('f-pace')) || DATA.fastest_pace_default;
+  const base = r.fastest_pace || DATA.fastest_pace_default;
+  box.textContent = 'Earliest a read counts: ' + (DATA.points || []).map(p =>
+    `${p.label} ≥ ${fmtPace(r.floors ? r.floors[p.id] / base * secs : null)}`).join(' · ');
+}
+
+/* Start-signal options: time of day the gun fired, where it came from, and
+   what the race clock would read right now if that were the gun ("now
+   +12:34") - the quickest way to tell a real start from a sensor knock
+   once a dozen triggers have piled up. The "now" part re-renders every
+   second while a dialog is open (tickStartOptions). */
+function startOptionLabel(ts, source) {
+  const secs = (Date.now() - new Date(ts).getTime()) / 1000;
+  return `${fmtClock(ts)} · ${source} · now +${fmtRace(secs)}`;
+}
+function startOption(s, extra) {
+  return `<option value="${esc(s.ts)}" data-ts="${esc(s.ts)}" data-source="${esc(s.source)}"${extra || ''}>${esc(startOptionLabel(s.ts, s.source))}</option>`;
+}
+function tickStartOptions() {
+  const d = document.getElementById('dlg');
+  if (!d.open) return;
+  d.querySelectorAll('option[data-ts]').forEach(o => { o.textContent = startOptionLabel(o.dataset.ts, o.dataset.source); });
+}
+function optionSource(selectId) {
+  const sel = document.getElementById(selectId), o = sel && sel.options[sel.selectedIndex];
+  return (o && o.dataset.source) || 'picked signal';
+}
+
+function openGun(key) {
+  const race = DATA.races[String(key)];
+  // This pane's own candidates first (newest on top), then every other
+  // start the console heard recently that is not already among them - a
+  // start that was routed to another pane, or to none, is still one click
+  // away here.
+  const own = race.gun_candidates.slice().reverse();
+  const near = ts => own.some(c => Math.abs(new Date(c.ts) - new Date(ts)) < 2000);
+  const others = ((STATUS && STATUS.recent_starts) || []).filter(s => !near(s.ts));
+  const cands = own.map(c => startOption(c, race.gun === c.ts ? ' selected' : '')).join('');
+  const extra = others.length
+    ? `<optgroup label="Other starts heard by the console">${others.map(s => startOption(s)).join('')}</optgroup>` : '';
+  dlg(`<h3>Gun — ${esc(race.name)}</h3><div class="body">
+    <label>Start signals (time of day · source · race clock if this were the gun)</label>
+    <select id="f-cand">${cands || extra ? (cands || '') + extra : '<option value="">none received</option>'}</select>
+    ${race.gun ? `<div class="hint" style="font-size:11.5px;color:var(--ink-3)">Current gun ${fmtClock(race.gun)} (${esc(race.gun_source)}).</div>` : ''}
+    <label>…or set manually (HH:MM:SS.mmm, blank = pick above)</label>
+    <input id="f-clock" placeholder="14:05:00.000">
+    All splits and finishes re-derive against the new gun instantly.
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn" onclick="closeDlg();api('/api/races/${key}/gun',{clock:'now',source:'manual now'})">Gun = now</button>
+    <button class="btn primary" onclick="if (!gv('f-clock') && !gv('f-cand')) { alert('Pick a start signal or type a time'); return; }
+      closeDlg();api('/api/races/${key}/gun',
+      {clock: gv('f-clock') || gv('f-cand'), source: gv('f-clock') ? 'manual' : optionSource('f-cand')})">Set gun</button>
+  </div>`);
+}
+
+/* Add a read by hand. For a split point the server offers an estimate
+   (the athlete's own pace over the course distances, and the pack they
+   were running with) - "Use" fills the time and marks the read estimated,
+   which shows as an "est" flag here and a tilde + column in the CSV. A
+   finish is never estimated: it is typed, or it is not a result. */
+/* "Needs attention" (2026-09-26, replaces the review badge, the pop-up at
+   finish time and the close-race detour): a strip at the top of the pane
+   listing every finisher lacking a split the other runners have (a
+   station is "expected" once anyone has a real read there), each with
+   Estimate (add dialog, estimate pre-accepted), Add time (the coach's
+   hand time) and Publish without splits (accept the gap: they leave the
+   list, undo below). Until a row is fixed, MeetPro shows that athlete's
+   splits up to the gap - it files splits by position, so a later split
+   cannot be written past a missing one. Empty = nothing rendered. */
+function attentionHtml(race, res) {
+  if (!res) return '';
+  const rows = res.finishers.filter(r => (r.missing || []).length);
+  const waived = res.finishers.filter(r => (r.waived || []).length && !(r.missing || []).length);
+  if (!rows.length && !waived.length) return '';
+  const n = rows.reduce((s, r) => s + r.missing.length, 0);
+  return `<div class="attention">
+    ${rows.length ? `<h4 title="MeetPro shows their splits up to the gap until it is filled">Needs attention · ${rows.length} finisher${rows.length === 1 ? '' : 's'} missing a split
+      ${n > 1 ? `<button class="btn" title="Estimate every missing split in this race at once (each flagged est)" onclick="estimateAllMissing(${race.key})">Estimate all (${n})</button>` : ''}</h4>` : ''}
+    ${rows.map(r => `<div class="row"><span class="num">${r.place}</span><span class="bib num">${esc(r.bib)}</span>
+        <span>${esc(r.last_name)}${r.first_name ? ', ' + esc(r.first_name) : ''}${r.school ? ' · ' + esc(r.school) : ''}</span>
+        ${r.missing.map(p => `<span class="flag miss" style="cursor:default">no ${esc(pointLabel(p))}</span>
+          <button class="btn primary" title="Add ${esc(pointLabel(p))} with the estimate filled in — press Add to accept it (flagged est), or overtype it" onclick="openAdd(${race.key}, '${esc(r.bib)}', '${esc(p)}', true)">Estimate</button>
+          <button class="btn" title="Type the coach's hand time for ${esc(pointLabel(p))}" onclick="openAdd(${race.key}, '${esc(r.bib)}', '${esc(p)}', false)">Add time</button>`).join('')}
+        <button class="btn" style="margin-left:auto" title="Accept that this athlete has no ${r.missing.map(pointLabel).map(esc).join(' / ')} read: they keep their finish and place, MeetPro gets their splits up to the gap, and they leave this list (undo below)" onclick="waiveMissing(${race.key}, '${esc(r.bib)}')">Publish without split${r.missing.length > 1 ? 's' : ''}</button></div>`).join('')}
+    ${waived.length ? `<div class="row hint">Published without splits: ${waived.map(r => `<span class="bib num">${esc(r.bib)}</span> ${esc(r.last_name)} <a href="#" onclick="waiveMissing(${race.key}, '${esc(r.bib)}', true); return false">undo</a>`).join(' · ')}</div>` : ''}
+  </div>`;
+}
+function waiveMissing(key, bib, undo) {
+  api(`/api/races/${key}/waive`, { bib, undo: !!undo });
+}
+
+/* Publishing switch (Stations panel): OFF keeps every read here - heard,
+   classified, backed up to reads-<date>.txt in the RFID folder - but sends
+   nothing to FinishLynx and writes no merged .lif (warm-ups, tag checks, a
+   test start). Always ON after a restart. Switching ON asks whether the
+   reads kept back meanwhile should go to FinishLynx now; the .lif files
+   catch up by themselves. */
+async function setPublishing(on) {
+  const s = STATUS || {};
+  const racing = DATA && DATA.enabled ? DATA.order.map(k => DATA.races[String(k)]).filter(r => r.status === 'racing') : [];
+  if (!on && racing.length && !confirm(`${racing.map(r => r.name).join(', ')} is racing. Switch publishing OFF anyway?\n\nFinishes will NOT reach FinishLynx or MeetPro until it is switched back on.`)) {
+    applyPublishing(s); return;
+  }
+  let flush = false;
+  if (on && s.publish_kept_back)
+    flush = confirm(`${s.publish_kept_back} read${s.publish_kept_back > 1 ? 's' : ''} reached the console while publishing was off.\n\nSend them to FinishLynx now?\nOK = send (in time order; a runner's finish becomes their result there).\nCancel = leave them out (warm-ups, tests). The .lif files catch up either way.`);
+  const d = await api('/api/publish', { on, flush });
+  if (d && d.ok) {
+    STATUS = Object.assign(STATUS || {}, { publishing: d.publishing, publish_kept_back: d.kept_back,
+                                           publish_off_since: on ? null : new Date().toISOString() });
+    applyPublishing(STATUS); renderAlarm(STATUS);
+    if (on && flush) alert(`${d.sent} read${d.sent === 1 ? '' : 's'} sent to FinishLynx.`);
+  }
+}
+function applyPublishing(s) {
+  const cb = document.getElementById('pub-on'), v = document.getElementById('pub-v');
+  if (!cb) return;
+  const on = s.publishing !== false;
+  cb.checked = on;
+  v.textContent = on ? 'ON' : 'OFF';
+  v.style.color = on ? 'var(--good)' : 'var(--crit)';
+}
+
+/* Save as...: fetch a file from the console and let the operator choose
+   where it goes (Chrome/Edge save picker on this PC). Browsers without the
+   picker - or a console opened from another machine - get a normal
+   download instead. */
+async function saveAs(url, name, desc, mime, ext) {
+  let blob;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) { let e = {}; try { e = await r.json(); } catch (x) {} alert(e.error || 'export failed'); return false; }
+    blob = await r.blob();
+  } catch (e) { alert('request failed: ' + e); return false; }
+  if (window.showSaveFilePicker) {
+    try {
+      const h = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: desc, accept: { [mime]: [ext] } }] });
+      const w = await h.createWritable(); await w.write(blob); await w.close();
+      return true;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return false;       // operator cancelled the picker
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  return true;
+}
+function csvName(race) {
+  return `${(race.name || 'race' + race.key).replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '')}-results.csv`;
+}
+function exportMeet() {
+  const d = new Date(), pad = n => String(n).padStart(2, '0');
+  saveAs('/api/races/export.csv', `meet-results-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.csv`,
+         'CSV file', 'text/csv', '.csv');
+}
+
+/* Save .lif: the pane's results in the same merged layout the console
+   keeps in the RFID folder for MeetPro - FinishLynx's rows where it has
+   them, RFID splits, and splits stopping at an athlete's first missing
+   point (MeetPro files splits by position, so a gap would mislabel the
+   rest). "Save as..." picks the location; "Save to lif-exports" keeps the
+   old behaviour. The dialog lists finishers missing a split, with fixes. */
+function openSaveLif(key) {
+  const race = DATA.races[String(key)], res = DATA.results[String(key)] || { finishers: [] };
+  const missing = res.finishers.filter(r => (r.missing || []).length);
+  const name = `${String(race.event).padStart(3, '0')}-${race.round}-${String(race.heat).padStart(2, '0')}.lif`;
+  dlg(`<h3>Save .lif — ${esc(race.name)}</h3><div class="body">
+    <label style="display:flex;align-items:center;gap:8px;white-space:nowrap"><input type="radio" name="f-lif" value="splits" checked onchange="saveLifMode()" style="width:auto;flex:none;margin:0"> Finish times <b>&nbsp;and splits&nbsp;</b> (${(DATA.points || []).filter(p => !p.finish).map(p => esc(p.label)).join(', ')})</label>
+    <label style="display:flex;align-items:center;gap:8px;white-space:nowrap;margin-top:4px"><input type="radio" name="f-lif" value="finish" onchange="saveLifMode()" style="width:auto;flex:none;margin:0"> Finish times only</label>
+    <div id="f-lif-warn" style="margin-top:8px">${missing.length ? `
+      <div style="color:var(--warn);font-weight:600">⚠ ${missing.length} finisher${missing.length > 1 ? 's are' : ' is'} missing a split the others have</div>
+      <table style="width:100%;margin-top:4px">
+        <tr><th>Pl</th><th>Bib</th><th>Athlete</th><th>Missing</th></tr>
+        ${missing.map(r => `<tr><td class="num">${r.place}</td><td class="bib num">${esc(r.bib)}</td>
+          <td>${esc(r.last_name)}${r.school ? ' · ' + esc(r.school) : ''}</td>
+          <td>${r.missing.map(p => `<button class="btn small" title="Add ${esc(pointLabel(p))} with the estimate filled in, or type the coach's hand time" onclick="closeDlg(); openAdd(${key}, '${esc(r.bib)}', '${esc(p)}', true)">+ ${esc(pointLabel(p))}</button>`).join(' ')}</td></tr>`).join('')}
+      </table>
+      <div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:6px">How to proceed, per athlete: <b>+ Mile</b> opens the add dialog with an estimate ready (press Add, or overtype a hand time from the coach) — or press <b>Estimate all</b> below — or <b>save anyway</b>: that athlete's splits stop before the missing one (MeetPro files splits by position, so a later split can't be written without it).</div>` :
+      `<div class="hint" style="font-size:11.5px;color:var(--good)">Every finisher has all the splits the race has.</div>`}</div>
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:8px">File name: <span class="num">${esc(name)}</span>. <b>Save as…</b> asks where to put it; <b>Save to lif-exports</b> writes <span class="num">lif-exports\\${esc(name)}</span> inside the meet folder. Neither touches FinishLynx's own file. ${res.on_course.length ? `${res.on_course.length} athlete${res.on_course.length > 1 ? 's are' : ' is'} still on course (listed with their splits so far).` : ''}</div>
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    ${missing.length ? `<button class="btn" onclick="estimateAllMissing(${key}).then(() => openSaveLif(${key}))">Estimate all</button>` : ''}
+    <button class="btn" id="f-lif-save" onclick="saveLif(${key})">Save to lif-exports</button>
+    <button class="btn primary" onclick="saveLifAs(${key}, '${esc(name)}')">Save as…</button>
+  </div>`);
+}
+async function saveLifAs(key, name) {
+  const splits = document.querySelector('input[name="f-lif"]:checked').value === 'splits';
+  closeDlg();
+  await saveAs(`/api/races/${key}/lif?splits=${splits ? 1 : 0}`, name, 'FinishLynx results (.lif)', 'text/plain', '.lif');
+}
+function saveLifMode() {
+  const finishOnly = document.querySelector('input[name="f-lif"]:checked').value === 'finish';
+  const w = document.getElementById('f-lif-warn');
+  if (w) w.style.display = finishOnly ? 'none' : '';
+}
+async function saveLif(key) {
+  const splits = document.querySelector('input[name="f-lif"]:checked').value === 'splits';
+  closeDlg();
+  let d = {};
+  try {
+    const r = await fetch(`/api/races/${key}/save_lif`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ splits }) });
+    d = await r.json();
+  } catch (e) { alert('request failed: ' + e); return; }
+  if (d.error) { alert(d.error); return; }
+  alert(`Saved ${d.finishers} finisher${d.finishers === 1 ? '' : 's'} ${splits ? 'with splits' : '(finish times only)'} to:\n${d.path}` +
+        (d.missing && d.missing.length ? `\n\n${d.missing.length} athlete(s) are missing a split, so their splits stop before it: ${d.missing.map(m => m.bib).join(', ')}` : ''));
+}
+
+function closeRace(key) {
+  const res = DATA.results[String(key)], n = res ? res.needs_review : 0;
+  if (n && !confirm(`${n} finisher${n > 1 ? 's are' : ' is'} still missing a split (see Needs attention at the top of the pane). Close the race anyway? They keep their finish; in MeetPro their splits stop at the gap.`)) return;
+  api(`/api/races/${key}/status`, {status: 'final'});
+}
+async function estimateAllMissing(key) {
+  closeDlg();
+  let d = {};
+  try {
+    const r = await fetch(`/api/races/${key}/estimate_missing`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+    d = await r.json();
+  } catch (e) { alert('request failed: ' + e); return; }
+  if (d.error) { alert(d.error); return; }
+  const failed = d.failed || [];
+  let msg = `${(d.added || []).length} split${(d.added || []).length === 1 ? '' : 's'} estimated.`;
+  if (failed.length) msg += `\n\nNo estimate possible for:\n` + failed.map(f => `  bib ${f.bib} ${pointLabel(f.point)}: ${f.reason}`).join('\n') + '\n\nEnter those by hand (Add time in the Needs attention list).';
+  alert(msg);
+  await refresh();
+}
+
+function openAdd(key, presetBib, presetPoint, autoUse) {
+  const race = DATA.races[String(key)];
+  const pts = (DATA.points || []).map(p =>
+    `<option value="${esc(p.id)}" ${p.id === (presetPoint || 'FINISH') ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
+  dlg(`<h3>Add ${presetBib ? 'split' : 'athlete'} — ${esc(race.name)}</h3><div class="body" style="min-width:520px">
+    <label>Live reads — newest first; click one to use it${race.gun ? '' : ' (no gun yet: no race time)'}</label>
+    <div id="f-live" data-key="${key}" class="scroll" style="max-height:190px;border:1px solid var(--border);border-radius:7px;margin-bottom:6px">${liveReadsHtml(key)}</div>
+    <label>Bib</label><input id="f-bib" value="${esc(presetBib || '')}" oninput="estimateLater(${key})">
+    <label>Point</label><select id="f-point" onchange="estimateNow(${key})">${pts}</select>
+    <div id="f-est" class="hint" style="font-size:12px;color:var(--ink-3);margin:6px 0;min-height:18px"></div>
+    <div style="display:flex;gap:10px">
+      <div style="flex:1"><label>Race time (M:SS.s) — as a coach reads it</label>
+        <input id="f-elapsed" placeholder="6:12.3" oninput="raceTimeTyped(${key})" ${race.gun ? '' : 'disabled title="no gun yet"'}></div>
+      <div style="flex:1"><label>Clock time (HH:MM:SS.mmm)</label>
+        <input id="f-clock" placeholder="14:26:31.200" oninput="clockTyped()"></div>
+    </div>
+    <div id="f-conv" class="hint" style="font-size:11.5px;color:var(--ink-3);min-height:16px">${race.gun ? `Race time is measured from this pane's gun, ${fmtClock(race.gun)}.` : 'No gun on this pane yet: enter a clock time.'}</div>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="f-estflag"> mark as estimated</label>
+    Placed in order and rescored automatically.
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn primary" onclick="submitAdd(${key})">Add</button>
+  </div>`);
+  // From the review flow the estimate is accepted up front: the operator
+  // can press Add, or overtype a hand time (which clears the est flag).
+  if (presetBib) estimateNow(key).then(() => { if (autoUse && EST_LAST) useEstimate(); });
+}
+/* The pick-list in the Add dialog: each read the console has heard, newest
+   first, with who it was (from the .ppl) and what its finish time would be
+   in THIS race (read clock minus this pane's gun). Reads already in the
+   race are dimmed; a read from before the gun shows no race time. */
+function liveReadsHtml(key) {
+  const race = DATA.races[String(key)], res = DATA.results[String(key)];
+  const inRace = new Set(res ? res.finishers.concat(res.on_course).map(r => r.bib) : []);
+  const gun = race.gun ? new Date(race.gun).getTime() : null;
+  if (!LIVE_READS.length) return '<div class="note">no reads heard yet</div>';
+  return '<table>' + LIVE_READS.map((r, i) => {
+    const a = r.athlete || {};
+    const who = [a.last_name ? `${a.last_name}${a.first_name ? ', ' + a.first_name : ''}` : '', a.school, a.gender].filter(Boolean).join(' · ');
+    const t = new Date(r.ts).getTime();
+    const fin = gun && isFinite(t) && t > gun ? fmtElapsed((t - gun) / 1000) : '';
+    const dim = inRace.has(r.bib) ? ' style="opacity:.55"' : '';
+    return `<tr${dim} title="click to fill the form with this read" onclick="useLiveRead(${key}, ${i})" style="cursor:pointer">
+      <td class="right num">${esc(r.time || fmtClock(r.ts))}</td>
+      <td class="bib num">${esc(r.bib)}</td>
+      <td>${esc(who) || '<span style="color:var(--ink-3)">not in roster</span>'}</td>
+      <td><span class="pt">${esc(r.point || r.reader_id || '')}</span></td>
+      <td class="right num">${fin ? `<b>${esc(fin)}</b>` : '<span style="color:var(--ink-3)">—</span>'}</td>
+    </tr>`;
+  }).join('') + '</table>';
+}
+function useLiveRead(key, i) {
+  const r = LIVE_READS[i]; if (!r) return;
+  document.getElementById('f-bib').value = r.bib;
+  document.getElementById('f-clock').value = r.time || fmtClock(r.ts);
+  document.getElementById('f-elapsed').value = '';
+  document.getElementById('f-estflag').checked = false;
+  const pt = (DATA.points || []).find(p => p.id === r.point) ? r.point
+           : (r.reader_id === 'FINISH' || !r.point ? 'FINISH' : null);
+  if (pt) document.getElementById('f-point').value = pt;
+  const race = DATA.races[String(key)];
+  const t = new Date(r.ts).getTime(), gun = race.gun ? new Date(race.gun).getTime() : null;
+  document.getElementById('f-conv').textContent = gun && t > gun
+    ? `read at ${r.time || fmtClock(r.ts)} = ${fmtElapsed((t - gun) / 1000)} after the gun`
+    : `read at ${r.time || fmtClock(r.ts)}`;
+  estimateNow(key);
+}
+/* Coach says "6:12 at the mile": convert against the pane's gun so the
+   clock field shows what will be stored; typing a clock time clears the
+   race-time field so there is only ever one source of truth. */
+function raceTimeTyped(key) {
+  const race = DATA.races[String(key)], secs = parseElapsed(gv('f-elapsed'));
+  const conv = document.getElementById('f-conv');
+  document.getElementById('f-estflag').checked = false;
+  if (!gv('f-elapsed').trim()) { conv.textContent = ''; return; }
+  if (secs == null || !race.gun) { conv.textContent = 'Race time like 6:12.3 or 1:02:03'; return; }
+  const ts = new Date(new Date(race.gun).getTime() + secs * 1000);
+  const pad = (n, w) => String(n).padStart(w, '0');
+  document.getElementById('f-clock').value =
+    `${pad(ts.getHours(), 2)}:${pad(ts.getMinutes(), 2)}:${pad(ts.getSeconds(), 2)}.${pad(ts.getMilliseconds(), 3)}`;
+  conv.textContent = `${fmtElapsed(secs)} after the gun = clock ${document.getElementById('f-clock').value}`;
+}
+function clockTyped() {
+  document.getElementById('f-estflag').checked = false;
+  document.getElementById('f-elapsed').value = '';
+  document.getElementById('f-conv').textContent = '';
+}
+let EST_TIMER = null, EST_LAST = null;
+function estimateLater(key) { clearTimeout(EST_TIMER); EST_TIMER = setTimeout(() => estimateNow(key), 350); }
+async function estimateNow(key) {
+  const box = document.getElementById('f-est'); if (!box) return;
+  const bib = gv('f-bib').trim(), point = gv('f-point');
+  EST_LAST = null;
+  if (!bib) { box.textContent = ''; return; }
+  const p = (DATA.points || []).find(x => x.id === point);
+  if (p && p.finish) { box.textContent = 'Finish times are typed, never estimated.'; return; }
+  box.textContent = 'estimating…';
+  let d;
+  try { d = await (await fetch(`/api/races/${key}/estimate?bib=${encodeURIComponent(bib)}&point=${encodeURIComponent(point)}`)).json(); }
+  catch (e) { d = { ok: false, reason: String(e) }; }
+  if (gv('f-bib').trim() !== bib || gv('f-point') !== point) return;   // stale
+  if (!d.ok) { box.textContent = 'No estimate: ' + d.reason; return; }
+  EST_LAST = d;
+  const line = x => x ? `${fmtElapsed(x.elapsed)} (${x.detail})` : '—';
+  box.innerHTML = `<div><b style="color:var(--ink-1)">Suggested ${esc(fmtElapsed(d.suggested.elapsed))}</b>
+      <span class="num">${esc(fmtClock(d.suggested.clock))}</span> · ${esc(d.method)}
+      <button class="btn small" onclick="useEstimate()">Use</button></div>
+    <div>pace: ${esc(line(d.pace))}</div><div>neighbours: ${esc(line(d.neighbours))}</div>`;
+}
+function useEstimate() {
+  if (!EST_LAST) return;
+  document.getElementById('f-clock').value = fmtClock(EST_LAST.suggested.clock);
+  document.getElementById('f-elapsed').value = '';
+  document.getElementById('f-conv').textContent = `estimate: ${fmtElapsed(EST_LAST.suggested.elapsed)} after the gun`;
+  document.getElementById('f-estflag').checked = true;
+}
+function submitAdd(key) {
+  const body = { bib: gv('f-bib').trim(), point: gv('f-point'), clock: gv('f-clock').trim(),
+                 estimated: document.getElementById('f-estflag').checked };
+  // The server converts race time against the gun itself (authoritative);
+  // the clock field was only a preview.
+  if (gv('f-elapsed').trim()) { body.elapsed = gv('f-elapsed').trim(); delete body.clock; }
+  if (!body.bib || !(body.clock || body.elapsed)) { alert('Bib and a race time or clock time are required'); return; }
+  if (body.estimated && EST_LAST && EST_LAST.point === body.point) body.note = 'estimated: ' + EST_LAST.method;
+  closeDlg();
+  api(`/api/races/${key}/add_read`, body);
+}
+
+function openAthlete(key, bib) {
+  const res = DATA.results[String(key)];
+  const row = res.finishers.concat(res.on_course).find(r => r.bib === bib);
+  const reads = row.splits.concat(row.finish ? [{...row.finish, label: 'Finish'}] : []);
+  const missing = (DATA.points || []).filter(p => p.finish ? !row.finish : !row.splits.some(s => s.point === p.id));
+  dlg(`<h3>Bib ${esc(bib)} — ${esc(DATA.races[String(key)].name)}</h3><div class="body">
+    ${reads.map(s => `<div style="display:flex;justify-content:space-between;padding:2px 0">
+      <span>${esc(s.label || 'Finish')} · <span class="num">${fmtClock(s.clock)}</span>${s.estimated ? ' <span class="flag">est</span>' : s.manual ? ' <span class="flag">manual</span>' : ''}${s.overridden ? ' <span class="flag">edited</span>' : ''}</span>
+      ${s.fl_only ? `<span class="hint" style="color:var(--ink-3)">from FinishLynx's .lif, not the reader — change it in FinishLynx</span>` : `<span>
+        <button class="btn small" onclick="editTime(${s.read_id}, '${fmtClock(s.clock)}')">Edit time</button>
+        <button class="btn small" title="Remove just this one read" onclick="closeDlg();api('/api/reads/${s.read_id}/ignore')">Delete read</button>
+      </span>`}</div>`).join('')}
+    ${missing.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 0">
+      ${missing.map(p => `<button class="btn small" title="${p.finish ? 'Type the finish time' : 'Add this split, with an estimate offered'}"
+        onclick="closeDlg(); openAdd(${key}, '${esc(bib)}', '${esc(p.id)}')">+ ${esc(p.label)}${p.finish ? '' : ' (estimate)'}</button>`).join('')}</div>` : ''}
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:4px">
+      ${reads.length > 1 ? `${reads.length} reads for this bib. ` : ''}Deleting one read leaves the athlete
+      listed on their next read - use <b>Remove from race</b> to take them out entirely (restorable from the Ignored pane).</div>
+    <label>Move athlete (all reads) to</label>
+    <select id="f-to">${raceOptions(key)}</select>
+    Timestamps never change — the race decides which gun they're measured against.
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Close</button>
+    <button class="btn stop" onclick="if (confirm('Remove bib ${esc(bib)} and all ${reads.length} read(s) from ${esc(DATA.races[String(key)].name)}?')) { closeDlg(); api('/api/races/${key}/remove_bib', {bib: '${esc(bib)}'}); }">Remove from race</button>
+    <button class="btn primary" onclick="closeDlg();api('/api/races/move',
+      {bib: '${esc(bib)}', from: ${key}, to: gv('f-to')})">Move</button>
+  </div>`);
+}
+
+function editTime(readId, current) {
+  const v = prompt('New clock time (HH:MM:SS.mmm), empty to restore the raw read:', current);
+  if (v === null) return;
+  closeDlg();
+  api('/api/reads/' + readId + '/override', {clock: v});
+}
+
+/* Assign a held/ignored read: who it is, and the time it would have in each
+   race from that race's gun (a finish-mat read film-corrected like the
+   race's own finishers). The likeliest race is picked: same gender, the
+   latest gun before the read. (2026-09-30, user's ask) */
+function filmCorr(r, race) { return (r.corrections || {})[String(race.key)] || 0; }   // each race its own
+function assignTime(r, race) {
+  if (!race || !race.gun) return null;
+  return (new Date(r.clock) - new Date(race.gun)) / 1000 - filmCorr(r, race);
+}
+function openAssign(readId) {
+  const r = (DATA.held || []).concat(DATA.ignored || []).find(x => x.id === readId);
+  if (!r) return;
+  const races = DATA.order.map(k => DATA.races[String(k)]);
+  const timeText = race => { const t = assignTime(r, race); return t == null ? 'no gun' : t < 0 ? 'before the gun' : fmtElapsed(t); };
+  const fits = race => race.gun && assignTime(r, race) >= 0 && (!r.gender || !race.gender || race.gender === 'X' || race.gender === r.gender);
+  const best = races.filter(fits).sort((a, b) => new Date(b.gun) - new Date(a.gun))[0];
+  const who = [r.last_name ? `${esc(r.last_name)}${r.first_name ? ', ' + esc(r.first_name) : ''}` : 'not in the .ppl',
+               r.gender, r.school].filter(Boolean).join(' · ');
+  dlg(`<h3>Assign read to race</h3><div class="body">
+    <div style="margin-bottom:8px"><b class="num">${esc(r.bib)}</b> ${who} — ${esc(r.label)} at <span class="num">${fmtClock(r.clock)}</span></div>
+    <label>Race</label><select id="f-to" onchange="assignPreview(${readId})">${races.map(x =>
+      `<option value="${x.key}" ${best && x.key === best.key ? 'selected' : ''}>${esc(x.name)} (${x.status}) — ${timeText(x)}</option>`).join('')}</select>
+    <div id="f-assign-time" style="margin-top:8px"></div>
+  </div><div class="foot">
+    <button class="btn" onclick="closeDlg()">Cancel</button>
+    <button class="btn primary" onclick="closeDlg();api('/api/reads/${readId}/assign',{race: gv('f-to')}).then(d => { if (d && d.finishlynx && d.finishlynx.startsWith('not sent')) alert(d.finishlynx); })">Assign</button>
+  </div>`);
+  assignPreview(readId);
+}
+function assignPreview(readId) {
+  const r = (DATA.held || []).concat(DATA.ignored || []).find(x => x.id === readId);
+  const race = DATA.races[String(gv('f-to'))], el = document.getElementById('f-assign-time');
+  if (!r || !race || !el) return;
+  const t = assignTime(r, race);
+  el.innerHTML = t == null ? `<span style="color:var(--warn)">${esc(race.name)} has no gun yet: no time until it gets one.</span>`
+    : t < 0 ? `<span style="color:var(--crit)">This read is ${fmtElapsed(-t)} before ${esc(race.name)}'s gun (${fmtClock(race.gun)}) - not this race.</span>`
+    : `${r.finish ? 'Finish' : esc(r.label)} time in ${esc(race.name)}: <b class="num" style="font-size:16px">${fmtElapsed(t)}</b>
+       <span style="color:var(--ink-3)">(gun ${fmtClock(race.gun)}${filmCorr(r, race) ? `, film offset ${filmCorr(r, race).toFixed(2)} s` : ''})</span>`
+      + (r.gender && race.gender && race.gender !== 'X' && race.gender !== r.gender ? `<div style="color:var(--warn)">Gender: athlete ${r.gender}, race ${race.gender}.</div>` : '');
+}
+
+/* ---------------------------- wiring ---------------------------- */
+
+const socket = io();
+/* Flash a pane when a read lands in its race: compare each race's count of
+   assigned reads with the previous snapshot (the read itself carries no
+   race key; the races_update that follows it does). */
+const FLASH = {}, READ_COUNTS = {};
+function noteNewReads(d) {
+  if (!d || !d.enabled) return;
+  for (const key of d.order) {
+    const res = d.results[String(key)] || { finishers: [], on_course: [] };
+    const n = res.finishers.concat(res.on_course).reduce((a, r) => a + r.splits.length + (r.finish ? 1 : 0), 0);
+    if (key in READ_COUNTS && n > READ_COUNTS[key]) FLASH[key] = Date.now();
+    READ_COUNTS[key] = n;
+  }
+}
+socket.on('races_update', d => { noteNewReads(d); DATA = d; render(); renderStations(); renderEvtSync(); });
+socket.on('status_update', applyStatus);
+socket.on('tag_read', onTagRead);
+socket.on('reads_cleared', () => { LIVE_READS = []; });
+socket.on('remote_unit_update', pollUnits);
+
+(async () => {
+  refresh(); pollStatus(); pollUnits(); seedLiveReads();
+  try {
+    const c = await (await fetch('/api/config')).json();
+    CFG = c;
+    if (c.event_directory) {
+      showMeet(c.event_directory);
+      // athletes reload at boot from the remembered folder
+      try {
+        const a = await (await fetch('/api/athletes')).json();
+        if (a.success) showMeet(c.event_directory, `${Object.keys(a.by_bib || {}).length} athletes · ${(a.schools || []).length} schools`);
+      } catch (e) {}
+    }
+  } catch (e) {}
+  // #gun=<race key> opens that pane's Gun picker on load (screenshots/tests);
+  // #add=<race key>:<bib>:<point> opens the Add-split dialog prefilled.
+  const g = /[#&]gun=(\d+)/.exec(location.hash);
+  if (g) setTimeout(() => { if (DATA && DATA.races[g[1]]) openGun(parseInt(g[1])); }, 1500);
+  // (append :auto to accept the estimate up front, as the review buttons do)
+  const a = /[#&]add=(\d+):([^:&]*):([^:&]*)(?::(auto))?/.exec(location.hash);
+  if (a) setTimeout(() => { if (DATA && DATA.races[a[1]]) openAdd(parseInt(a[1]), decodeURIComponent(a[2]), decodeURIComponent(a[3]), !!a[4]); }, 1500);
+  // #settings=<key> opens a pane's race settings
+  const st = /[#&]settings=(\d+)/.exec(location.hash);
+  if (st) setTimeout(() => { if (DATA && DATA.races[st[1]]) openScoring(parseInt(st[1])); }, 1500);
+  const sl = /[#&]savelif=(\d+)/.exec(location.hash);
+  if (sl) setTimeout(() => { if (DATA && DATA.races[sl[1]]) openSaveLif(parseInt(sl[1])); }, 1500);
+  // #pop=stations, #pop=fl, #pop=clocks, #pop=app, #pop=reader or
+  // #pop=unit:S1 opens a popover on load (handy for screenshots/tests).
+  // Old names still work: sb/cam/film -> fl, pi/lora -> stations,
+  // reads -> app, clock:COMx -> clocks.
+  const m = /[#&]pop=([a-z]+)(?::([^&]+))?/.exec(location.hash);
+  if (m) setTimeout(() => {
+    const kind = { sb: 'fl', cam: 'fl', film: 'fl', pi: 'stations', lora: 'stations', reads: 'app', clock: 'clocks' }[m[1]] || m[1];
+    const chip = document.querySelector(`.chip[data-pop="${kind}"]`);
+    if (chip) togglePop(chip);
+    else if (kind === 'unit' || kind === 'reader')
+      openPop(kind, kind === 'unit' ? decodeURIComponent(m[2] || '') : null, document.getElementById('chip-st'));
+  }, 1500);
+})();
+setInterval(pollStatus, 3000);
+setInterval(pollUnits, 5000);
+setInterval(() => { if (DATA && DATA.enabled) render(); }, 1000);
+setInterval(tickStartOptions, 1000);
+setInterval(renderStationsChip, 1000);     // the dots fade by the second
+setInterval(() => { if (CLOCK_STATUS) renderClocksChip(CLOCK_STATUS); }, 1000);   // the clocks tick
+</script>
+</body>
+</html>
