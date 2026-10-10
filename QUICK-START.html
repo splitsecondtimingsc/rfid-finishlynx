@@ -12,8 +12,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="guide-version" content="5">
-<meta name="guide-reflects-commit" content="6cc123c">
+<meta name="guide-version" content="6">
+<meta name="guide-reflects-commit" content="eed4e07">
 <title>RFID Console Quick Start</title>
 <style>
   :root { --ink: #1c1c1a; --ink-2: #4a4944; --ink-3: #77766e; --line: #dcdad3; --soft: #f4f3ef;
@@ -60,7 +60,7 @@
 <main>
 
 <h1>RFID Timing Console · Quick Start</h1>
-<p class="ver">Guide version 5 · matches the middleware at commit <code>6cc123c</code> (2026-10-05). The package's
+<p class="ver">Guide version 6 · matches the middleware at commit <code>eed4e07</code> (2026-10-10). The package's
 <span class="path">VERSION.txt</span> names the commit you installed.</p>
 <p class="lede">Set up a Windows timing PC so the RFID mat, the LED clocks and FinishLynx work together, then run a
 cross-country meet from the console's <b>Meet</b> tab: entries from MileSplit, bibs, FinishLynx start lists, results,
@@ -107,7 +107,7 @@ reader at hand.</p>
       <tr><td>Open Network Connections now to set it</td><td>Only shown when the PC is not on the reader's network: <b>Y</b>, then see <a href="#network">Network</a>.</td></tr>
       <tr><td>Open the Wireshark download page now</td><td><b>Y</b> if you want starts from the camera. Install Wireshark with <b>Npcap</b> ticked. <b>N</b> is fine: you then set guns from the race pane.</td></tr>
       <tr><td>Change FinishLynx's settings now</td><td><b>Close FinishLynx first</b>, then <b>Y</b>. It sets everything in <a href="#finishlynx">section 4</a> for you and keeps a backup. <b>N</b> if you prefer to set them by hand.</td></tr>
-      <tr><td>Share meets with your other PCs through …\My Drive\RFID meets</td><td>Only shown when <b>Google Drive for desktop</b> is installed. <b>Y</b> on every PC of your team (same Google account): a meet made or edited on one shows up on the others. Without Drive, set it up later in the console: Meet › Info › <b>Sharing</b>.</td></tr>
+      <tr><td>Share meets with your other PCs through …\My Drive\RFID meets</td><td>Only shown when <b>Google Drive for desktop</b> is installed. <b>Y</b> on every PC of your team (same Google account): a meet made or edited on one shows up on the others (<a href="#share">section 5e</a>). Without Drive, set it up later in the console: Meet › Info › <b>Sharing</b>.</td></tr>
     </table>
   </li>
   <li>At the end the console starts and the browser opens <span class="path">http://localhost:8080</span>.
@@ -192,9 +192,9 @@ The console rewrites FinishLynx's start lists every time something there changes
 <ul>
   <li><b class="ui">Import from MileSplit</b> (usual). Log in with the timing company's MileSplit email and password; leave
       <b>Remember me on this computer</b> ticked so the console can log in again by itself later. Pick the month,
-      <b class="ui">List meets</b>, then <b class="ui">Import</b> on your meet. Tick <b>full team rosters</b> to bring in every
-      athlete on each team's roster, not just the entered ones: only entered athletes get bibs, the rest are there to be
-      found quickly for race-day changes.</li>
+      <b class="ui">List meets</b>, then <b class="ui">Import</b> on your meet. <b>Full team rosters</b> is ticked by default:
+      every athlete on each team's roster comes in, not just the entered ones. Only entered athletes get bibs; the rest
+      are there to be found quickly for race-day walk-ups (<b class="ui">Refresh from MileSplit</b> brings the rosters up to date).</li>
   <li><b class="ui">Import file</b>: a Hy-Tek <span class="path">.txt</span>, a <span class="path">.csv</span>, or a MileSplit
       entries <span class="path">.json</span>.</li>
   <li><b class="ui">New</b>: an empty meet; add teams and athletes by hand.</li>
@@ -207,11 +207,13 @@ Meet tab counts the same things.</p>
 
 <h3>5b. Teams and bibs</h3>
 <ol>
-  <li><b>Teams</b>: untick <b>Scores</b> for a team that runs without being scored.</li>
+  <li><b>Teams</b>: untick <b>Scores</b> for a team that runs without being scored. Click a team to see its entered
+      runners and its full roster.</li>
   <li><b>Athletes</b> → <b class="ui">Assign bibs…</b>. Type the bib ranges you were given (leave the last <b>End</b> blank
       to keep counting upward), pick one sequence or per-team blocks, and drag the <b>Order</b> (for example Team,
       Gender, Last name). The preview shows who gets which number; <b class="ui">Assign N bibs</b>. Keep
-      <b>Retain existing bibs</b> ticked when you run it again later: only athletes without a bib get one.</li>
+      <b>Retain existing bibs</b> ticked when you run it again later: only athletes without a bib get one. The
+      <b>Athletes</b> page lists runners with no bib first, every match on one page.</li>
 </ol>
 <figure><img src="docs/quickstart/console-bibs.png" alt="Assign bibs dialog with ranges, order and a preview">
   <figcaption>Assign bibs: ranges, order, and a preview before anything changes.</figcaption></figure>
@@ -221,8 +223,17 @@ Meet tab counts the same things.</p>
 <b>Start</b> time for each race if you have a schedule (<code>8am</code>, <code>9:30</code>, <code>1:15</code>: a bare
 1:00 to 6:59 is the afternoon). Start times are optional; with them, check-in can open and close by itself
 (<a href="#meetday">section 7</a>), the schedule prints with times, and MileSplit Live can show them.</p>
+<ul>
+  <li><b>Two races off one gun</b> (for example the JV girls and boys): a race's <b>⋮</b> → <b class="ui">Run at the same
+      time as…</b>, tick the other race, <b class="ui">Run together</b>. FinishLynx gets one event and the console one pane
+      (each runner tagged with their race and race place); each race is still placed, team-scored, printed and sent to
+      MileSplit on its own.</li>
+  <li><b>Divisions</b> (extra standings inside a race, by gender, teams or grades, re-scored among their own runners):
+      set them up on the Info page (<b>Divisions</b> row → <b class="ui">Set up…</b>), then pick them per race with <b>⋮</b> →
+      <b class="ui">Divisions…</b>. None set = the meet scores as usual.</li>
+</ul>
 <figure><img src="docs/quickstart/console-meet-races.png" alt="Meet tab, Races page with run order and start times">
-  <figcaption>Meet › Races: run order, start times, entries per race.</figcaption></figure>
+  <figcaption>Meet › Races: run order, start times, entries, on course and finished per race.</figcaption></figure>
 
 <h3>5d. Print and check</h3>
 <ul>
@@ -234,6 +245,17 @@ Meet tab counts the same things.</p>
   <li>MileSplit meets: turn <b>Live results</b> on (Info page, or the <b>Live Results</b> switch at the top) if the meet
       shows live results on MileSplit.</li>
 </ul>
+<h3 id="share">5e. Share the meet with your other PCs (optional)</h3>
+<p>With <b>Google Drive for desktop</b> on each of your PCs (signed in to the same Google account): Meet › Info ›
+<b>Sharing</b>, tick <b>Google Drive</b>, pick the same folder in My Drive on every PC (for example
+<span class="path">My Drive\RFID meets</span>), give the PC a name, <b class="ui">Save</b>. A meet made or edited on one PC
+shows up on the others within minutes (<b class="ui">Sync now</b> to hurry it). Each PC keeps its own copy and writes only
+its own folder in Drive, and only the parts that changed, so even a large meet syncs in a few kilobytes. Edits to
+different athletes or races on different PCs all come through; if two PCs change the same thing differently, Sharing
+lists it and you pick <b class="ui">Keep mine</b> or <b class="ui">Take theirs</b>. Reads and race panes are never shared, only the meet.</p>
+<p>Only your own PCs see your meets: they live in your Google account. To open a shared copy on a PC that isn't
+syncing, Meet → <b class="ui">Open another…</b> → <b class="ui">Browse…</b> and pick the <span class="path">manifest.json</span>
+in that PC's folder in Drive.</p>
 <div class="note warn">Still running the meet from <b>MeetPro</b>? Leave the Meet tab with no meet open and set MeetPro's
 <b class="ui">Interfaces → F.A.T. → Setup → Directory</b> to <span class="path">C:\Finish_Lynx_Results\RFID</span>. The
 console then reads MeetPro's start lists from there, but makes no race panes for you: add one per race on the Races tab
@@ -252,7 +274,8 @@ start lists are in the RFID folder. With no meet open it asks about MeetPro inst
 
 <h2 id="meetday"><span class="n">7</span>Meet day</h2>
 <figure><img src="docs/quickstart/console-races.png" alt="The Races tab with a race running">
-  <figcaption>Races tab: status chips and the Finish Reads / Live Results switches on top, one pane per race.</figcaption></figure>
+  <figcaption>Races tab: a running race. Race time and gun on the left, the race's buttons on the right; Needs attention
+  shows a missing split and a runner who crossed the finish twice; the M marks a time typed by hand.</figcaption></figure>
 <ol>
   <li><b>Power up</b> the reader, clocks and FinishLynx. The console starts by itself at login, with the meet still open
       (if not: <b>Meet</b> tab → <b class="ui">Open</b> → your meet).</li>
@@ -265,23 +288,55 @@ start lists are in the RFID folder. With no meet open it asks about MeetPro inst
       at once, one per reader. With start times, the dialog's <b>Meet default</b> (for example open 30 minutes before,
       close at the gun) does this for every race by itself.</li>
   <li><b>The gun</b> arms the race by itself (camera start or FinishLynx's clock). Otherwise open the race's
-      <b class="ui">Gun ▾</b> and pick the start or <b class="ui">Gun = now</b>. The LED clocks follow the running race;
+      <b class="ui">Gun ▾</b> and pick the start or <b class="ui">Gun = now</b>. The race time runs at the left of the
+      pane's gun row while the race is on (a closed race shows none). The LED clocks follow the running race;
       <b class="ui">Show on clocks</b> puts an earlier race back on them for its stragglers.</li>
-  <li>Finishers appear as they cross. <b>Needs attention</b> lists anyone missing a mile split:
-      <b class="ui">Estimate</b>, <b class="ui">Add time</b> or <b class="ui">Publish without split</b>.</li>
+  <li>Finishers appear as they cross. Each station counts <b>one read per runner</b>: their first crossing. A later
+      crossing, like a runner walking back over the finish mat, is ignored and kept out of FinishLynx.
+      <b>Needs attention</b> lists anyone missing a mile split (<b class="ui">Estimate</b>, <b class="ui">Add time</b>
+      or <b class="ui">Publish without split</b>) and anyone who <i>crossed more often than expected</i>
+      (<b class="ui">Checked</b>, or <b class="ui">Reads…</b> to use another crossing).</li>
+  <li><b>Course crosses the finish mat mid-race?</b> The race's <b class="ui">Settings</b> → <b class="ui">Crossings…</b>:
+      <b>Reads before</b> 1 for the finish station skips that first pass. <b>Reads after</b> 1 if runners walk back over
+      the mat to the team area, so they aren't flagged.</li>
+  <li><b>Fix a runner on the pane:</b> click their finish time and type the right one (race time like
+      <code>16:31.4</code> or a clock time), Enter. A time set by hand shows an <b>M</b>: click it to go back to the read.
+      Their <b>⋯</b>: <b class="ui">Swap bib with…</b>, <b class="ui">Change bib number…</b>, <b class="ui">Reads…</b>
+      (every read they have, with <b class="ui">Use this read</b>, <b class="ui">Edit time</b> and
+      <b class="ui">Delete</b>) and <b class="ui">Remove from race</b>. Click a column heading to sort the pane (again
+      to reverse).</li>
   <li><b class="ui">Close race</b> when the last runner is in. Anyone who ran in a race they were not entered in (or with a
       bib nobody has) has a pulsing <b class="ui">Not in this race</b> chip on their row and is left out of the results:
       click it for <b class="ui">Swap bib with…</b>, <b class="ui">Override</b> or <b class="ui">Ignore</b>, now or later.
       The clocks go back to the time of day.</li>
   <li><b>Results</b>: Meet tab → <b>Results</b>, pick the race, clear anything under <i>To resolve before final</i>,
-      <b class="ui">Mark final</b>. Print from <b>Print</b>: its drop-down picks the races (the one shown, others, or <b>All races</b>) for results, team scores, awards, labels… Then
-      <b class="ui">Send MileSplit Results</b>.</li>
+      <b class="ui">Mark final</b> (top right). Print from <b>Print</b>: its drop-down picks the races (the one shown,
+      others, or <b>All races</b>) for results, team scores, awards, labels… Then <b class="ui">Send MileSplit Results</b>
+      (every final race goes up together).</li>
 </ol>
+<figure><img src="docs/quickstart/console-runner.png" alt="A runner's reads: three that count and a later crossing">
+  <figcaption>⋯ → Reads…: every read of a runner in the race. Here the walk back over the finish mat is ignored;
+  Use this read would make it count instead.</figcaption></figure>
+<h3>Fixing results</h3>
+<ul>
+  <li>A <b>final</b> race is locked: no DNF/DNS/DQ, no edits. <b class="ui">Reopen</b> (top right of the Results page)
+      and fix it right there: click a <b>bib</b> or a <b>time</b> and type (Enter saves; a bib someone else has offers
+      to swap them), the DNF/DNS/DQ drop-down, <b class="ui">+ Add runner</b>, and each row's <b>⋯</b> for
+      <b class="ui">Swap bib with…</b>, <b class="ui">Reads…</b> or <b class="ui">Remove from the results</b>. The race
+      re-places and re-scores as you go; <b class="ui">Mark final</b> again and send.</li>
+  <li><b>Sort</b> the finishers by Place, Time, Bib, Last name or School (click again to reverse); <b>Hide DNS</b> leaves
+      the no-shows off the list. The race list and the Print column stay on screen while you scroll.</li>
+  <li><b>FinishLynx's video shows the right order but the reads don't</b> (a runner walked back over the mat, a chip
+      read at the wrong moment): <b class="ui">Select .lif file…</b> and pick FinishLynx's saved
+      <span class="path">.lif</span> for that race. Its times become the race's results; a final race is worked out again
+      at once (then send it again). A time you typed by hand still wins over the file.</li>
+</ul>
 <div class="note"><b>Finish Reads</b> switch (top right): <b>OFF</b> for warm-ups or tag checks over the mats. Reads are still
 heard and shown, but nothing goes to FinishLynx. A red strip reminds you while it is off, and it is always ON after a
 restart. <b>Live Results</b> switch: MileSplit Live for a meet imported from MileSplit (greyed out until you are logged in).</div>
 <figure><img src="docs/quickstart/console-results.png" alt="Meet tab, Results page">
-  <figcaption>Meet › Results: the race's results, Mark final, printing and MileSplit.</figcaption></figure>
+  <figcaption>Meet › Results: a final race, locked; Select .lif file and Reopen top right; team scores; the finishers with
+  their sort buttons and Hide DNS; printing and MileSplit on the right.</figcaption></figure>
 <h3>The chips</h3>
 <table>
   <tr><th>Chip</th><th>Click it for</th></tr>
@@ -328,10 +383,15 @@ again to finish. Nothing is deleted without a checked copy.</p>
   <tr><td>Gun not picked up</td><td>Race <b class="ui">Gun ▾</b> → pick the start or <b class="ui">Gun = now</b>. For camera starts: Wireshark installed, FinishLynx open.</td></tr>
   <tr><td>Live Results switch greyed out</td><td>Log in to MileSplit (Meet → Info) and use a meet imported from MileSplit.</td></tr>
   <tr><td>MileSplit refuses the results</td><td>Too few athletes carry a MileSplit id: Meet → Athletes, <b>MileSplit id review</b>, approve the matches.</td></tr>
-  <tr><td>A coach says bibs were swapped (or the wrong kid wore one) after the race</td><td>Meet → <b>Athletes</b>: type the
-      bib, then <b class="ui">Swap bibs</b> or <b class="ui">Someone else is wearing N…</b>. A race not yet final re-scores at once.
-      A final race: <b class="ui">Re-finalize</b> when the console offers it, then <b class="ui">Send the corrected results</b> if
-      they were on MileSplit already. MileSplit Live follows by itself.</td></tr>
+  <tr><td>A coach says bibs were swapped (or the wrong kid wore one) after the race</td><td>Results page: <b class="ui">Reopen</b>,
+      click the runner's bib and type the right one: a bib someone else has offers <b class="ui">Swap bibs</b>. (Or on Meet →
+      <b>Athletes</b>: <b class="ui">Someone else is wearing N…</b>.) The race re-scores at once; <b class="ui">Mark final</b>, then
+      <b class="ui">Send the corrected results</b> if they were on MileSplit already. MileSplit Live follows by itself.</td></tr>
+  <tr><td>A finish time is wrong</td><td>Click it (race pane, or the Results page once reopened) and type the right one. The <b>M</b>
+      next to it puts the read time back.</td></tr>
+  <tr><td>A runner is placed by a later crossing, or the course crosses the finish mat early</td><td>Their <b>⋯</b> →
+      <b class="ui">Reads…</b> → <b class="ui">Use this read</b> on the right crossing. For the whole race: <b class="ui">Settings</b>
+      → <b class="ui">Crossings…</b> (Reads before / Reads after). Or <b class="ui">Select .lif file…</b> with FinishLynx's file.</td></tr>
   <tr><td>Close meet refused</td><td>Close FinishLynx first.</td></tr>
   <tr><td>Console page does not load</td><td>Open it on the timing PC itself. Double-click the Desktop <b>RFID Console</b> shortcut, then reload the page (F5).</td></tr>
   <tr><td>After an update, buttons look old</td><td>Reload the page (F5).</td></tr>
@@ -353,6 +413,8 @@ again to finish. Nothing is deleted without a checked copy.</p>
   <tr><td>Start lists and RFID .lif files</td><td><span class="path">C:\Finish_Lynx_Results\RFID</span></td></tr>
   <tr><td>Closed meets</td><td><span class="path">C:\Finish_Lynx_Results\&lt;date&gt; &lt;meet name&gt;\</span>, opened again from
       <span class="path">&lt;meet folder&gt; - MEET FILE.json</span></td></tr>
+  <tr><td>Shared meets (optional)</td><td>Your Google Drive folder (for example <span class="path">My Drive\RFID meets</span>): one
+      subfolder per meet, one per PC inside it</td></tr>
   <tr><td>MileSplit saved login</td><td><span class="path">%LOCALAPPDATA%\rfid_finishlynx</span> (Meet → Info → <b>Forget saved login</b> removes it)</td></tr>
 </table>
 
