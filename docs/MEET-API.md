@@ -132,6 +132,8 @@ not retried until the times change).
 | POST | /api/meet/bibs/assign | `{rows: [[start, end|""], ...], sort: [...], retain: bool, per_team_blocks?, entered_only?, athlete_ids?, dry_run: bool}` | `{report: AssignReport}` (+ summary unless dry_run) |
 | POST | /api/meet/bibs/clear | `{athlete_ids?: [...], all?: true}` | `{report}` + summary |
 | GET | /api/meet/bibs/conflicts | | bibs.conflicts().to_dict() |
+| GET | /api/meet/bibs/check | | the bib check (2026-10-10, meet/bibcheck.py): `{ok, recorded, runners, changed: [{athlete_id, name, team, printed, now, races}], lynx: {path, checked, wrong: [{bib, lynx, lynx_team, wearer, athlete_id, races}], missing: [{bib, wearer, athlete_id, races}]}, races: {rk: n}}`. `printed` = Athlete.printed_bib, recorded when rosters / team-bibs / competitor-labels are printed and kept up by one-off bib edits at the table; `lynx` compares the lynx.ppl in the start-list folder |
+| POST | /api/meet/bibs/check | `{action: restore\|accept\|write, athlete_ids?, all?}` | fix it: `restore` puts printed numbers back (someone else holding one loses it), `accept` records the current bibs as handed out (default: the changed runners; `all` = every runner), `write` writes the start lists again. `{report, check, meet}`; 409 when nothing to restore / meet file only |
 
 ## MileSplit id review
 

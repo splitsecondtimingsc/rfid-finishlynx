@@ -155,6 +155,10 @@ class Athlete:
     # full-roster meet only athletes entered now, or entered on MileSplit
     # before their race was cancelled, get bibs (bibs.assign).
     roster_only: bool = False
+    # The number on the bib this runner was handed (2026-10-10): set when the
+    # rosters / bib lists / labels are printed, kept up by one-off changes at
+    # the table. The bib check flags a bib that no longer matches (bibcheck.py).
+    printed_bib: str = ""
 
     def grade(self, season_end_year: Optional[int]) -> str:
         """'12', '9', '7' ... from the graduation year, else grade_text."""

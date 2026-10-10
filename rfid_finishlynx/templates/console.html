@@ -2519,7 +2519,7 @@ function paneHtml(race, res, mode) {
     <div class="pane-head${canFold ? ' fold' : ''}"${canFold ? ` onclick="if (!event.target.closest('button')) collapsePane(${k})" title="Click to fold this race back to one line"` : ''}>
       ${gtag(g)}
       <div><h2>${esc(race.name)}</h2><div class="sub">Evt ${race.event}-${race.round}-${race.heat}${paneStartText(race)}</div></div>
-      <span style="margin-left:auto"></span>${crossingsBadge(race)}${lifBadge(race)}
+      <span style="margin-left:auto"></span>${bibCheckBadge(race)}${crossingsBadge(race)}${lifBadge(race)}
       <button class="btn small" onclick="openScoring(${k})" title="Scoring ${race.scoring.scorers}+${race.scoring.displacers} · fastest pace ${fmtPace(race.fastest_pace || DATA.fastest_pace_default)}/mi · gender · delete pane">Settings</button>
       <span class="badge ${race.status}" style="margin-left:0">${race.status.toUpperCase()}</span>
     </div>
@@ -4736,8 +4736,71 @@ function fixLink(f) {
     case 'id_review': case 'id_coverage': return `<button class="link" onclick="meetGo('athletes', 'review')">Review</button>`;
     case 'stale_final': return `<button class="link" onclick="staleFinalDlg()">Re-finalize…</button>`;
     case 'issues': return `<button class="link" onclick="issueJump('${esc((f.detail || [])[0] || '')}')">Show</button>`;
+    case 'bib_check': return `<button class="link" onclick="bibCheckDlg()">Check bibs…</button>`;
     default: return '';
   }
+}
+/* ------------------------------ Bib check (2026-10-10) ------------------------------ */
+/* Before a race: the bibs the runners were handed (recorded when rosters,
+   team bib lists or competitor labels are printed), the meet's bibs and
+   FinishLynx's lynx.ppl must agree (meet/bibcheck.py). At the Jim Crawford
+   meet they didn't, and FinishLynx put the right numbers on the wrong names.
+   Each problem has its fix right here (user: an easy way to address
+   changes, not just flagging them). */
+function bibCheckBadge(race) {
+  if (!MEET.active || race.status === 'final') return '';
+  const n = ((MEET.bib_check || {}).races || {})[rkOf(race)];
+  return n ? `<button class="btn small" style="color:var(--bad);border-color:var(--bad)" onclick="bibCheckDlg()" title="Bibs in this race differ from what was handed out or from FinishLynx's start list">⚠ ${n} bib${n === 1 ? '' : 's'} to check</button>` : '';
+}
+let BIBCHK = null;
+async function bibCheckDlg() {
+  const r = await meetApi('/api/meet/bibs/check');
+  if (!r.ok) { meetMsg(r.data.error, false); return; }
+  BIBCHK = r.data;
+  dlg(bibCheckHtml(BIBCHK));
+}
+function bibCheckHtml(c, msg) {
+  const lx = c.lynx || {}, ch = c.changed || [], wrong = lx.wrong || [], miss = lx.missing || [];
+  const races = rs => (rs || []).map(rk => { const m = meetRace(rk); return esc(m ? (m.name || rk) : rk); }).join(', ');
+  const ok = !ch.length && !wrong.length && !miss.length;
+  return `<h3>Bib check</h3><div class="body" style="max-width:760px;max-height:65vh;overflow:auto;display:grid;gap:12px;font-size:12.5px">
+    ${msg ? `<div class="msg-line ${msg.ok ? 'ok' : 'bad'}">${esc(msg.text)}</div>` : ''}
+    <div style="color:var(--ink-3)">${c.recorded} of ${c.runners} runners' bibs recorded as handed out (printing the rosters, team bib lists or competitor labels records them).
+      ${lx.checked ? `FinishLynx's start list: ${esc(lx.path)}.` : 'No FinishLynx start list to compare here.'}</div>
+    ${ok ? `<div style="color:var(--ok, inherit);font-weight:600">Everything matches: every runner has the bib they were handed${lx.checked ? ', and FinishLynx has the same names' : ''}.</div>` : ''}
+    ${ch.length ? `<div><div class="lbl" style="color:var(--bad);margin-bottom:4px">Bib changed since it was handed out (${ch.length})</div>
+      <div style="margin-bottom:6px">The runner is still wearing the printed number unless they were really given a new one. <b>Put back</b> the printed number, or <b>Keep</b> the new one if they were handed it.</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn primary" onclick="bibFix('restore')">Put back all printed numbers</button>
+        <button class="btn" onclick="bibFix('accept')">Keep all new numbers</button></div>
+      <table style="font-size:12px"><tr><th>Runner</th><th>Team</th><th class="num">Printed</th><th class="num">Now</th><th>Race</th><th></th></tr>
+      ${ch.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td class="num"><b>${esc(x.printed)}</b></td><td class="num">${esc(x.now || '—')}</td><td>${races(x.races)}</td>
+        <td class="right" style="white-space:nowrap"><button class="btn small" onclick="bibFix('restore', ['${esc(x.athlete_id)}'])">Put back ${esc(x.printed)}</button>
+          ${x.now ? `<button class="btn small" onclick="bibFix('accept', ['${esc(x.athlete_id)}'])">Keep ${esc(x.now)}</button>` : ''}</td></tr>`).join('')}</table></div>` : ''}
+    ${wrong.length || miss.length ? `<div><div class="lbl" style="color:var(--bad);margin-bottom:4px">FinishLynx's start list disagrees</div>
+      <div style="margin-bottom:6px">${ch.length ? 'Fix the bibs above first; the start list is written again with every change. ' : ''}Writing the start lists again puts the meet's names into FinishLynx's lynx.ppl. If FinishLynx still shows the old names, open the event in FinishLynx again.</div>
+      <div style="margin-bottom:6px"><button class="btn${ch.length ? '' : ' primary'}" onclick="bibFix('write')">Write FinishLynx start lists again</button></div>
+      <table style="font-size:12px"><tr><th class="num">Bib</th><th>FinishLynx has</th><th>Wearing it</th><th>Race</th></tr>
+      ${wrong.map(x => `<tr><td class="num">${esc(x.bib)}</td><td>${esc(x.lynx)} <span style="color:var(--ink-3)">${esc(x.lynx_team)}</span></td><td>${x.wearer ? esc(x.wearer) : '<span style="color:var(--ink-3)">nobody</span>'}</td><td>${races(x.races)}</td></tr>`).join('')}
+      ${miss.map(x => `<tr><td class="num">${esc(x.bib)}</td><td><span style="color:var(--ink-3)">not listed</span></td><td>${esc(x.wearer)}</td><td>${races(x.races)}</td></tr>`).join('')}</table></div>` : ''}
+    <div style="border-top:1px solid var(--line, #ddd);padding-top:8px;color:var(--ink-3)">Bibs handed out without a printout from here (pre-printed, another program)?
+      <button class="btn small" onclick="bibFix('accept', null, true)">Record every runner's current bib as handed out</button></div>
+  </div><div class="foot"><button class="btn" onclick="bibCheckDlg()">Check again</button><button class="btn primary" onclick="closeDlg()">Done</button></div>`;
+}
+async function bibFix(action, ids, all) {
+  if (action === 'restore' && !ids && !confirm('Put the printed number back on every runner whose bib changed? Anyone else holding one of those numbers loses it (they show under "without a bib" to number again).')) return;
+  if (all && !confirm("Record every runner's current bib as the one handed out? Do this only when the bibs on the runners are the meet's current bibs.")) return;
+  const body = { action };
+  if (ids) body.athlete_ids = ids;
+  if (all) body.all = true;
+  const r = await meetApi('/api/meet/bibs/check', body);
+  if (!r.ok) { dlg(bibCheckHtml(BIBCHK || {}, { ok: false, text: r.data.error })); return; }
+  if (r.data.meet) applyMeet(r.data.meet);
+  BIBCHK = r.data.check;
+  const rep = r.data.report || {};
+  const text = action === 'restore' ? `Put back ${(rep.restored || []).length} printed number(s)` + ((rep.cleared || []).length ? `; ${rep.cleared.map(x => `${x.name} (had ${x.bib})`).join(', ')} now without a bib` : '')
+    + ((rep.skipped || []).length ? `; ${rep.skipped.length} left alone (two runners printed the same number)` : '')
+    : action === 'accept' ? `Recorded ${rep.recorded || 0} bib(s) as handed out` : 'Start lists written';
+  dlg(bibCheckHtml(BIBCHK, { ok: true, text }));
 }
 function liveText(live) {
   if (!live) return 'off';

@@ -12,6 +12,7 @@ store, the live status, the open meet's last start-list write. Fixing is the ins
 
 import ipaddress
 import json
+import logging
 import ntpath
 import os
 import socket
@@ -20,6 +21,8 @@ import time
 from typing import Dict, List, Optional
 
 from . import lynx_cfg
+
+logger = logging.getLogger(__name__)
 
 MEETPRO_PREFS = os.path.join(os.environ.get("APPDATA", ""), "com.directathletics.MeetPro2",
                              "Local Store", "preferences.json")
@@ -153,6 +156,31 @@ def meet_start_lists_row(sl: Dict, rfid: str) -> Dict:
                 f"written {when}" + (f" ({len(warns)} warning{'s' if len(warns) != 1 else ''})" if warns else ""))
 
 
+def bib_check_row(chk: Dict) -> Dict:
+    """The bib check before a race (meet/bibcheck.py, 2026-10-10): the bibs
+    handed out, the meet's bibs and FinishLynx's lynx.ppl agree."""
+    label = "Bibs match what was handed out and FinishLynx's start list"
+    fix = "Meet tab -> Info -> Bib check: put the printed numbers back, keep the new ones, or write the start lists again."
+    lx = chk.get("lynx") or {}
+    bad = len(chk.get("changed") or []) + len(lx.get("wrong") or []) + len(lx.get("missing") or [])
+    if bad:
+        bits = []
+        if chk.get("changed"):
+            bits.append(f"{len(chk['changed'])} runner(s) with another bib than printed")
+        if lx.get("wrong"):
+            bits.append(f"{len(lx['wrong'])} bib(s) named differently in FinishLynx")
+        if lx.get("missing"):
+            bits.append(f"{len(lx['missing'])} bib(s) not in FinishLynx's start list")
+        return _row("FinishLynx", "bib_check", label, False, "; ".join(bits), fix)
+    if not chk.get("recorded"):
+        return _row("FinishLynx", "bib_check", label, None,
+                    "no bibs handed out yet (printing the rosters or bib labels records them)"
+                    + ("" if lx.get("checked") else "; no lynx.ppl to compare"))
+    return _row("FinishLynx", "bib_check", label, True,
+                f"{chk['recorded']} of {chk['runners']} runners' bibs as handed out"
+                + (", FinishLynx's start list agrees" if lx.get("checked") else " (no lynx.ppl to compare)"))
+
+
 def main(argv=None) -> int:
     """INSTALL.bat's questions, before the console has ever run:
         --network [HOST]   exit 1 if no adapter is on HOST's /24 (reader)
@@ -268,6 +296,11 @@ def run(app) -> List[Dict]:
     svc = getattr(app, "meet_service", None)
     sl = svc.start_lists_status() if svc is not None and getattr(svc, "active", False) else None
     rows.append(meet_start_lists_row(sl, rfid) if sl is not None else meetpro_row(results, rfid))
+    if sl is not None and hasattr(svc, "bib_check"):
+        try:
+            rows.append(bib_check_row(svc.bib_check()))
+        except Exception:                          # the meet closed meanwhile
+            logger.debug("bib check row skipped", exc_info=True)
 
     # ------------------------------------------------------------ camera start
     if cfg.camera_start.enabled:

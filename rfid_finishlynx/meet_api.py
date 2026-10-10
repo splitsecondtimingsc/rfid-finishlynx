@@ -512,6 +512,21 @@ def bib_conflicts():
     return jsonify(_svc().conflicts())
 
 
+@bp.route("/api/meet/bibs/check", methods=["GET"])
+def bib_check():
+    """The bib check (2026-10-10): bibs handed out vs the meet's bibs vs
+    FinishLynx's lynx.ppl (meet/bibcheck.py)."""
+    return jsonify(_svc().bib_check())
+
+
+@bp.route("/api/meet/bibs/check", methods=["POST"])
+def bib_check_fix():
+    """{action: restore | accept | write, athlete_ids?, all?}: fix what the
+    bib check found (MeetService.fix_bibs)."""
+    report, summary = _svc().fix_bibs(_body())
+    return _ok(report=report, check=_svc().bib_check(), meet=summary)
+
+
 # --------------------------------------------------------------- id review
 
 @bp.route("/api/meet/idreview", methods=["GET"])
@@ -695,6 +710,11 @@ REPORTS = {
 }
 
 
+# Printouts that go out with the bibs: printing one records its runners'
+# bibs as handed out, for the bib check (2026-10-10).
+HANDOUTS = ("rosters", "team-bibs", "competitor-labels")
+
+
 def _csv(v: str) -> List[str]:
     return [x.strip() for x in str(v or "").split(",") if x.strip()]
 
@@ -875,9 +895,16 @@ def print_report(filename):
                 f"<h2>Printout not made</h2><p>{html.escape(str(e))}</p>"
                 "<p style='color:#666'>Close this tab and change the print options on the console.</p>")
         return Response(page, status=status, mimetype="text/html")
+    if name in HANDOUTS:
+        # what goes out with the bibs: the runners on it were handed them (2026-10-10)
+        try:
+            teams = [t for t in _csv(args.get("teams", "")) if t.lower() not in ("none", "unattached")]
+            svc.record_handed_out(teams or None)
+        except Exception:
+            logger.exception("Bib check: printout not recorded as handed out")
     meet_id = svc.summary().get("id", "meet")
     race = args.get("race")
-    fname = f"{meet_id}-{name}{'-' + rk_of(parse_rk(race)) if race else ''}.{fmt.lower()}"
+    fname =f"{meet_id}-{name}{'-' + rk_of(parse_rk(race)) if race else ''}.{fmt.lower()}"
     hint = re.sub(r"[^A-Za-z0-9._ -]+", "_", os.path.basename(request.args.get("name") or "")).strip(" .")
     if hint:
         fname = hint if hint.lower().endswith("." + fmt.lower()) else f"{hint}.{fmt.lower()}"

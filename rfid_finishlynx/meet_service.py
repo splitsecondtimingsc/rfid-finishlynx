@@ -44,7 +44,7 @@ from dataclasses import asdict
 from datetime import date, datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .meet import (bibs, divisions, edits, exports, idmatch, importers, lynx, milesplit,
+from .meet import (bibcheck, bibs, divisions, edits, exports, idmatch, importers, lynx, milesplit,
                    milesplit_web, scoring)
 from .meet.model import (DIVISION_GENDERS, ENTRY_STATUSES, RACE_MARKS, Athlete, Division, Entry,
                          Event, Meet, MeetStore, Race, Team, bib_number, grade_key,
@@ -77,6 +77,26 @@ class MeetError(Exception):
 
     def payload(self) -> dict:
         return {"error": str(self), **self.details}
+
+
+def _bibcheck_text(chk: dict) -> str:
+    """The bib check's one line for the Info page and the meet badge, with
+    one example of each kind of problem (2026-10-10)."""
+    parts = []
+    ch, wrong, missing = chk["changed"], chk["lynx"]["wrong"], chk["lynx"]["missing"]
+    if ch:
+        c = ch[0]
+        parts.append(f"{len(ch)} runner{'s' if len(ch) != 1 else ''} with another bib than the one handed out "
+                     f"({c['name']}: printed {c['printed']}, now {c['now'] or 'none'})")
+    if wrong:
+        w = wrong[0]
+        parts.append(f"FinishLynx's start list names someone else for {len(wrong)} bib{'s' if len(wrong) != 1 else ''} "
+                     f"({w['bib']}: {w['lynx']} there, " + (f"{w['wearer']} wearing it)" if w['wearer'] else "nobody has it)"))
+    if missing:
+        m = missing[0]
+        parts.append(f"{len(missing)} bib{'s' if len(missing) != 1 else ''} missing from FinishLynx's start list "
+                     f"({m['bib']} {m['wearer']})")
+    return "Bib check: " + "; ".join(parts)
 
 
 def _same_person_error(meet, e) -> "MeetError":
@@ -299,6 +319,7 @@ class MeetService:
         # (2026-10-10): a round before a meet is created or bibs are
         # assigned, and bib edits sent at once.
         self.meet_sync = None
+        self._ppl_seen: Optional[tuple] = None        # (path, mtime, size), parsed lynx.ppl
         self._load_active()
 
     # ------------------------------------------------------------ plumbing
@@ -749,6 +770,11 @@ class MeetService:
             errs = self._start_lists["errors"]
             fix.append({"kind": "start_lists", "text": "start lists not written: " + errs[0],
                         "count": len(errs), "detail": list(errs)})
+        chk = self._bibcheck_locked()
+        if not chk["ok"]:
+            fix.append({"kind": "bib_check", "text": _bibcheck_text(chk),
+                        "count": len(chk["changed"]) + len(chk["lynx"]["wrong"]) + len(chk["lynx"]["missing"]),
+                        "detail": sorted(chk["races"])})
 
         info = asdict(meet.meet)
         info.pop("id", None)
@@ -768,6 +794,8 @@ class MeetService:
         return {"active": True, "id": meet.meet.id, "file_only": self.file_only,
                 "closed_to": self.archived_folder(meet.meet.id) if self.file_only else None,
                 "info": info, "counts": counts, "fix": fix,
+                # the bib check per race, for the race panes' warning (2026-10-10)
+                "bib_check": {"races": chk["races"], "recorded": chk["recorded"], "runners": chk["runners"]},
                 "start_lists": sl, "milesplit": {"logged_in": logged_in, "live": live, "can_remember": os.name == "nt",
                               "remembered": remembered},
                 "preview": self.preview, "bib_ranges": [list(r) for r in meet.bib_ranges],
@@ -1427,6 +1455,7 @@ class MeetService:
             self._enter(meet, a, d.get("race"), d.get("event"))
             if str(d.get("bib") or "").strip():
                 self._set_bib(meet, a.id, d["bib"])
+                bibcheck.follow(meet, {}, [a.id])           # a spare handed out (2026-10-10)
             match = self._match_one(meet, a)
             return a.id, match
         (aid, match), summary = self._mutate(change, undo="add athlete")
@@ -1544,13 +1573,20 @@ class MeetService:
         raise MeetError(res.error, 400)
 
     def set_bib(self, aid: str, bib) -> Tuple[dict, dict]:
-        return self._mutate(lambda m: self._set_bib(m, aid, bib), undo="bib")
+        def change(meet: Meet):
+            before = {aid: (meet.athlete(aid).bib if meet.athlete(aid) else "")}
+            res = self._set_bib(meet, aid, bib)
+            bibcheck.follow(meet, before, [aid])          # a bib typed at the table (2026-10-10)
+            return res
+        return self._mutate(change, undo="bib")
 
     def swap_bibs(self, a: str, b: str) -> Tuple[dict, dict]:
         def change(meet: Meet):
+            before = {x.id: x.bib for x in meet.athletes if x.id in (str(a), str(b))}
             res = bibs.swap_bibs(meet, str(a), str(b))
             if not res.ok:
                 raise MeetError(res.error, 404 if "unknown" in res.error else 400)
+            bibcheck.follow(meet, before, [str(a), str(b)])
             return res.to_dict()
         return self._mutate(change, undo="swap bibs")
 
@@ -1589,9 +1625,11 @@ class MeetService:
 
         def change(meet: Meet):
             if d.get("athlete_id"):
-                self._athlete(meet, d["athlete_id"])
+                wearer = self._athlete(meet, d["athlete_id"])
+                before = {wearer.id: wearer.bib}
                 rep = edits.give_bib_to(meet, bib, str(d["athlete_id"]), race=race_arg(d),
                                         event=event_arg(d), holder_action=action)
+                bibcheck.follow(meet, before, [wearer.id])  # they wore it (2026-10-10)
                 return rep.to_dict(), None
             new = d.get("new")
             if not isinstance(new, dict):
@@ -1604,11 +1642,13 @@ class MeetService:
             if "grade" in new:
                 kw["grad_year"], kw["grade_text"] = _grade_fields(new["grade"])
             try:
+                before = {x.id: x.bib for x in meet.athletes}
                 rep = edits.add_wearer(meet, bib, str(new.get("first") or ""),
                                        str(new.get("last") or ""),
                                        allow_same=bool(new.get("force") or d.get("force")), **kw)
             except edits.SamePerson as e:
                 raise _same_person_error(meet, e) from None
+            bibcheck.follow(meet, before, [rep.athlete_id])
             match = None
             if rep.created:
                 added = meet.athlete(rep.athlete_id)
@@ -1651,6 +1691,93 @@ class MeetService:
     def conflicts(self) -> dict:
         with self._lock:
             return bibs.conflicts(self._require()).to_dict()
+
+    # ------------------------------------------------------------ bib check
+
+    def _bibcheck_locked(self) -> dict:
+        """bibcheck.check against the lynx.ppl in the folder FinishLynx reads
+        (parsed again only when the file moved). Not read when the meet was
+        opened without FinishLynx or in preview: nothing is written there."""
+        meet = self._require()
+        ppl, path = None, ""
+        directory = self._start_lists.get("dir") or self._rfid_dir()
+        if directory and not self.file_only and not self.preview:
+            path = bibcheck.ppl_path(directory)
+            try:
+                st = os.stat(path)
+                sig = (path, st.st_mtime_ns, st.st_size)
+            except OSError:
+                sig = None
+            if sig is not None:
+                if self._ppl_seen is None or self._ppl_seen[0] != sig:
+                    self._ppl_seen = (sig, bibcheck.read_ppl(path))
+                ppl = self._ppl_seen[1]
+        return bibcheck.check(meet, ppl, path)
+
+    def bib_check(self) -> dict:
+        with self._lock:
+            return self._bibcheck_locked()
+
+    def record_handed_out(self, team_ids=None) -> int:
+        """Rosters / team bib lists / competitor labels printed: the runners
+        on them (team_ids None = everyone) were handed their current bibs,
+        for runners not recorded yet. Never stops the printout."""
+        with self._lock:
+            meet = self.meet
+            if meet is None:
+                return 0
+            want = None
+            if team_ids:
+                teams = set(team_ids)
+                want = [a.id for a in meet.athletes if a.team_id in teams and meet.entered(a.id)]
+            if not any(a.bib and not a.printed_bib for a in meet.athletes
+                       if want is None or a.id in set(want)):
+                return 0
+        n, _ = self._mutate(lambda m: bibcheck.record(m, want), check=False)
+        if n:
+            logger.info(f"Bib check: {n} runner(s) recorded as handed their bibs (printout)")
+        return n
+
+    def fix_bibs(self, d: dict) -> Tuple[dict, dict]:
+        """The bib check's fixes (2026-10-10, user: an easy way to address
+        what it flags, not just a flag). action:
+          restore  put the printed numbers back (athlete_ids, default every
+                   runner whose bib changed); a runner holding one of them
+                   who wasn't handed it loses it
+          accept   the current bibs are the ones handed out (athlete_ids,
+                   default every changed runner; all: true = every runner)
+          write    write FinishLynx's start lists (lynx.ppl/.evt) again"""
+        action = d.get("action")
+        ids = d.get("athlete_ids")
+        if ids is not None and not isinstance(ids, list):
+            raise MeetError("athlete_ids must be a list", 400)
+        if action == "restore":
+            def change(meet: Meet):
+                rep = bibcheck.restore(meet, ids)
+                if not rep["restored"]:
+                    raise MeetError("nothing to put back: no runner's bib differs from the printed one", 409)
+                return rep
+            return self._mutate(change, undo="put back printed bibs")
+        if action == "accept":
+            def change(meet: Meet):
+                if d.get("all"):
+                    return {"recorded": bibcheck.record(meet, None, overwrite=True)}
+                changed = [c["athlete_id"] for c in bibcheck.check(meet)["changed"]]
+                pick = changed if ids is None else [i for i in ids if i in set(changed)]
+                return {"recorded": bibcheck.record(meet, pick, overwrite=True)}
+            return self._mutate(change, check=False, undo="accept bibs")
+        if action == "write":
+            if self.file_only:
+                raise MeetError("this meet was opened without FinishLynx: no start lists are written", 409)
+            with self._lock:
+                self._require()
+                self._write_start_lists_locked()
+                if self._start_lists.get("errors"):
+                    raise MeetError("start lists not written: " + self._start_lists["errors"][0], 500)
+                summary = self._summary_locked()
+            self._post(summary)
+            return {"written": self._start_lists.get("dir")}, summary
+        raise MeetError("action must be restore, accept or write", 400)
 
     # ------------------------------------------------------------ id review
 
