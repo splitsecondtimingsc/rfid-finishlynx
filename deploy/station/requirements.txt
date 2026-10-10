@@ -1,0 +1,7 @@
+sllurp>=2.0.0      # LLRP for Impinj readers
+pyserial>=3.5      # LoRa radio, LED clocks
+pyyaml>=6.0        # Configuration
+flask>=3.0.0       # Station dashboard
+flask-socketio>=5.3.0
+python-socketio>=5.10.0
+paramiko>=3.4.0    # SSH auto-configure of a fresh Impinj reader

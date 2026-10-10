@@ -1,6 +1,7 @@
 """LoRa receiver for finish line - receives reads from remote lap points."""
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -8,7 +9,10 @@ from typing import Callable, Optional
 
 from .config import LoRaConfig
 from .remote_protocol import ManagementMessage, format_ack
-from .transport import LoRaBatch, LoRaMessage, LoRaTransport, parse_any_lora_message
+from .transport import (
+    JOURNAL_LINE_FMT, LoRaBatch, LoRaMessage, LoRaTransport, journal_read_time,
+    parse_any_lora_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,37 +84,34 @@ class LoRaReceiver:
                 self.on_management_message(parsed)
             return
 
-        # BATCH: ACK once, then process each read individually so a
-        # retransmitted batch only delivers the reads not yet seen.
+        # The ACK means "accepted": it goes only after every read in the
+        # message was processed, so a failure leaves the sender retrying.
+        # A read counts as seen only once processed, so the retry of a
+        # batch delivers just the reads that failed (2026-10-04 review).
         if isinstance(parsed, LoRaBatch):
-            if self._transport:
+            ok = all([self._accept_read(message) for message in parsed.reads])
+            if ok and self._transport:
                 self._transport.send(format_ack(parsed.reader_id, parsed.seq, "OK"))
-            for message in parsed.reads:
-                self._accept_read(message)
             return
 
         # Single READ messages (LoRaMessage)
         message = parsed
-
-        if message.seq is not None:
+        ok = self._accept_read(message, dedup=message.seq is not None)
+        if ok and message.seq is not None and self._transport:
             # ACK delivery so the remote stops retransmitting.
-            if self._transport:
-                self._transport.send(format_ack(message.reader_id, message.seq, "OK"))
-        self._accept_read(message, dedup=message.seq is not None)
+            self._transport.send(format_ack(message.reader_id, message.seq, "OK"))
 
-    def _accept_read(self, message: LoRaMessage, dedup: bool = True):
-        """Dedup, journal, and dispatch one read."""
-        if dedup and self._is_duplicate(message):
+    def _accept_read(self, message: LoRaMessage, dedup: bool = True) -> bool:
+        """Dedup, journal, and dispatch one read. False = it failed to
+        process (not marked seen, so a retransmission tries again)."""
+        if dedup and self._seen(message):
             with self._stats_lock:
                 self._stats["duplicates"] += 1
             logger.debug(
                 f"Duplicate read from {message.reader_id}: bib {message.bib} - dropped"
             )
             self._journal("DUP", message)
-            return
-
-        with self._stats_lock:
-            self._stats["received"] += 1
+            return True
 
         logger.info(
             f"LoRa received: Bib {message.bib} at "
@@ -118,15 +119,26 @@ class LoRaReceiver:
             f"from {message.reader_id}"
         )
 
-        self._journal("RECV", message)
-
         if self.on_message:
-            self.on_message(message)
+            try:
+                self.on_message(message)
+            except Exception:
+                logger.exception(f"Read from {message.reader_id} (bib {message.bib}) failed to "
+                                 f"process; not acknowledged, the station will send it again")
+                self._journal("FAIL", message)
+                return False
+        # RECV = accepted: a restart rebuilds the dedup memory from these
+        self._journal("RECV", message)
+        with self._stats_lock:
+            self._stats["received"] += 1
+        if dedup:
+            self._remember(message)
+        return True
 
     def _journal(self, event: str, message: LoRaMessage):
         if not self._journal_path:
             return
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        stamp = datetime.now().strftime(JOURNAL_LINE_FMT)
         seq = f" seq={message.seq:02X}" if message.seq is not None else ""
         line = (
             f"{stamp} {event} bib={message.bib} "
@@ -139,18 +151,49 @@ class LoRaReceiver:
         except OSError as e:
             logger.error(f"Read journal write failed: {e}")
 
-    def _is_duplicate(self, message: LoRaMessage) -> bool:
-        """Check and record a read by content, pruning expired entries."""
+    def _seen(self, message: LoRaMessage) -> bool:
+        """Was this read (by content) processed already? Prunes expired entries."""
         now = time.monotonic()
         with self._stats_lock:
             for key, seen_at in list(self._seen_reads.items()):
                 if now - seen_at > self.READ_DEDUP_TTL_SEC:
                     del self._seen_reads[key]
-            key = (message.reader_id, message.bib, message.timestamp)
-            if key in self._seen_reads:
-                return True
-            self._seen_reads[key] = now
-            return False
+            return (message.reader_id, message.bib, message.timestamp) in self._seen_reads
+
+    def _remember(self, message: LoRaMessage):
+        with self._stats_lock:
+            self._seen_reads[(message.reader_id, message.bib, message.timestamp)] = time.monotonic()
+
+    _RECV_RE = re.compile(r"^(\S+ \S+) RECV bib=(\S+) t=(\S+) reader=(\S+)")
+
+    def _load_seen(self):
+        """Reads accepted in the last READ_DEDUP_TTL_SEC, from the journal:
+        a station resends what it never saw ACKed after either side
+        restarts, and those must not count twice (2026-10-04 review)."""
+        if not self._journal_path:
+            return
+        now, mono = datetime.now(), time.monotonic()
+        try:
+            with open(self._journal_path) as f:
+                lines = f.readlines()
+        except OSError:
+            return
+        loaded = 0
+        for line in lines:
+            m = self._RECV_RE.match(line)
+            if not m:
+                continue
+            try:
+                stamp = datetime.strptime(m.group(1), JOURNAL_LINE_FMT)
+                ts = journal_read_time(stamp, m.group(3))
+            except ValueError:
+                continue
+            age = (now - stamp).total_seconds()
+            if 0 <= age < self.READ_DEDUP_TTL_SEC:
+                self._seen_reads[(m.group(4), m.group(2), ts)] = mono - age
+                loaded += 1
+        if loaded:
+            logger.info(f"Remembering {loaded} read(s) accepted before the restart (dedup)")
 
     def start(self) -> bool:
         """Start the LoRa receiver.
@@ -161,6 +204,7 @@ class LoRaReceiver:
         if self._running:
             return True
 
+        self._load_seen()
         self._transport = LoRaTransport(self.config, on_receive=self._on_receive)
 
         # The transport keeps a reconnect thread going even when the first

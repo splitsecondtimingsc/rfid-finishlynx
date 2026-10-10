@@ -64,3 +64,15 @@ timing:
   dedup_window_sec: 12.0
   lap_mode: false
   total_laps: 1
+# Meets shared between this team's PCs (rfid_finishlynx/meet_sync.py). Off
+# until set in the console (Meet > Info > Sharing). mode "folder": a folder
+# every PC can see - Google Drive for desktop ("G:\My Drive\RFID meets") or
+# a network share; mode "git": a private git repo over SSH (remote; or a
+# folder on the NAS); mode "both": the two at once, each a backup of the
+# other. machine: this PC's name on the others (blank = the computer name).
+meet_sync:
+  enabled: false
+  mode: "off"
+  folder: ""
+  remote: ""
+  machine: ""

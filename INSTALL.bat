@@ -9,9 +9,12 @@ rem    - LED-clock USB-serial drivers (CH340 + PL2303)
 rem    - C:\Finish_Lynx_Results\RFID, a firewall rule for the local network
 rem    - checks: this PC on the reader's network, Wireshark for camera starts
 rem    - optional: FinishLynx's LapTime / scoreboard / folder settings
+rem    - meet sharing with the team's other PCs (NAS repo or Google Drive)
 rem    - "RFID Console" shortcuts on the Desktop and in Startup
 rem    - launches the console and opens http://localhost:8080/
-rem  Re-running it is safe: it upgrades files and skips what is done.
+rem  Re-running it is safe: it upgrades files and skips what is done. It
+rem  never copies over this PC's settings, meets or race state, and leaves
+rem  a console that is already running alone.
 rem  The Quick Start guide (QUICK-START.html) walks through all of it.
 rem ============================================================
 setlocal EnableExtensions
@@ -29,11 +32,17 @@ set "RESULTS=C:\Finish_Lynx_Results"
 set "SRC=%~dp0"
 
 echo.
-echo === [1/9] Copying files to %TARGET% ===
+echo === [1/10] Copying files to %TARGET% ===
 if /i "%SRC%"=="%TARGET%\" goto skipcopy
 rem Per-machine runtime files are never copied over an existing install
-rem (config.yaml is created from config.example.yaml on first run).
-robocopy "%SRC%." "%TARGET%" /e /nfl /ndl /njh /njs /xf config.yaml races-state.json PREVIEW_ONLY PROMOTIONS.log /xd .git .venv-lab >nul
+rem (config.yaml is created from config.example.yaml on first run). Same
+rem list as tools\promote.py, so a used copy (a dev clone, last season's
+rem folder) can't overwrite this PC's meets, closed-meet archives or race
+rem state (2026-10-05). The meet store is excluded by full path: the
+rem rfid_finishlynx\meet code folder shares its name and must be copied.
+robocopy "%SRC%." "%TARGET%" /e /nfl /ndl /njh /njs ^
+    /xf config.yaml config.yaml.tmp races-state.json races-state.json.tmp PREVIEW_ONLY PROMOTIONS.log lif_mirror.err *.log *.mirror *.bak *.orig *.pyc ^
+    /xd .git .venv .venv-lab venv __pycache__ .pytest_cache closed-meets lif-exports edgeprof dist "%SRC%meet" "%SRC%meet-sync" "%SRC%bench\results" >nul
 if errorlevel 8 goto fail
 :skipcopy
 rem A zip from the internet marks every file "blocked"; unblock the install
@@ -41,7 +50,7 @@ rem so the console never stops at a security prompt on a meet morning.
 powershell -NoProfile -Command "Get-ChildItem -LiteralPath '%TARGET%' -Recurse -File | Unblock-File" >nul 2>&1
 
 echo.
-echo === [2/9] Python ===
+echo === [2/10] Python ===
 set "PYEXE="
 rem 3.12 only: the bundled wheels are built for it (gevent, pyyaml, ...). Another
 rem Python on the PC is left alone; 3.12 installs next to it.
@@ -59,7 +68,7 @@ if not exist "%PYEXE%" goto fail
 :havepython
 
 echo.
-echo === [3/9] Python packages (offline, bundled wheels) ===
+echo === [3/10] Python packages (offline, bundled wheels) ===
 "%PYEXE%" -m pip install --no-warn-script-location --no-index --find-links "%TARGET%\wheels" -r "%TARGET%\requirements.txt"
 if not errorlevel 1 goto depsok
 echo Offline install failed - retrying from the internet...
@@ -68,18 +77,20 @@ if errorlevel 1 goto fail
 :depsok
 
 echo.
-echo === [4/9] LED-clock USB-serial drivers ===
+echo === [4/10] LED-clock USB-serial drivers ===
 pnputil /add-driver "%TARGET%\deploy\ch340\driver\CH341SER.INF" /install >nul 2>&1
 pnputil /add-driver "%TARGET%\deploy\pl2303\driver\ser2pl_1.inf" /install >nul 2>&1
 echo Done (already-installed drivers are skipped automatically).
 
 echo.
-echo === [5/9] Results folder and firewall ===
+echo === [5/10] Results folder and firewall ===
 if not exist "%RESULTS%\RFID" mkdir "%RESULTS%\RFID"
-echo %RESULTS%\RFID  - MeetPro writes start lists here, the console writes .lif files here
-rem The console listens on the local network (web page 8080, FinishLynx
-rem scoreboard feed 5891). Allowing it up front avoids the Windows Firewall
-rem pop-up; only this subnet can reach it.
+echo %RESULTS%\RFID  - FinishLynx start lists go here (from the console's Meet menu, or MeetPro);
+echo                 the console writes .lif files here
+rem The console listens for FinishLynx's scoreboard feed (UDP 5891) on every
+rem interface; its web page (8080) answers on this PC only since 2026-10-04.
+rem Allowing it up front avoids the Windows Firewall pop-up; only this
+rem subnet can reach it.
 netsh advfirewall firewall delete rule name="RFID Console" >nul 2>&1
 netsh advfirewall firewall add rule name="RFID Console" dir=in action=allow program="%PYEXE%" remoteip=localsubnet profile=any enable=yes >nul
 echo Firewall: RFID Console allowed from the local network.
@@ -87,7 +98,7 @@ echo Firewall: RFID Console allowed from the local network.
 pushd "%TARGET%"
 
 echo.
-echo === [6/9] Network: this PC and the RFID reader ===
+echo === [6/10] Network: this PC and the RFID reader ===
 "%PYEXE%" -m rfid_finishlynx.setup_check --network 192.168.0.128
 if not errorlevel 1 goto netok
 echo.
@@ -101,7 +112,7 @@ start "" ncpa.cpl
 :netok
 
 echo.
-echo === [7/9] Wireshark (for start times straight from the camera) ===
+echo === [7/10] Wireshark (for start times straight from the camera) ===
 "%PYEXE%" -m rfid_finishlynx.setup_check --wireshark
 if not errorlevel 1 goto wsok
 echo.
@@ -115,7 +126,7 @@ explorer.exe "https://www.wireshark.org/download.html"
 :wsok
 
 echo.
-echo === [8/9] FinishLynx settings (LapTime, scoreboard, folders) ===
+echo === [8/10] FinishLynx settings (LapTime, scoreboard, folders) ===
 "%PYEXE%" -m rfid_finishlynx.lynx_cfg check
 if errorlevel 2 (
     echo   FinishLynx was not found. Install it with the LapTime plug-in, then
@@ -134,15 +145,34 @@ if errorlevel 2 goto flok
 "%PYEXE%" -m rfid_finishlynx.lynx_cfg apply
 :flok
 
+echo.
+echo === [9/10] Meet sharing with this team's other PCs ===
+rem From the package's EDITION.json (tools/build_package.py --edition): the
+rem fleet's private repo on the NAS, or a Google Drive for desktop folder.
+rem A PC that already shares is left as it is. (2026-10-07)
+"%PYEXE%" -m rfid_finishlynx.meet_sync --install
+
 popd
 
 echo.
-echo === [9/9] Shortcuts (Desktop + auto-start at logon) and launch ===
+echo === [10/10] Shortcuts (Desktop + auto-start at logon) and launch ===
 powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; foreach ($d in @([Environment]::GetFolderPath('Desktop'), $ws.SpecialFolders('Startup'))) { $s = $ws.CreateShortcut((Join-Path $d 'RFID Console.lnk')); $s.TargetPath = 'C:\rfid_finishlynx\deploy\start-console.bat'; $s.WorkingDirectory = 'C:\rfid_finishlynx'; $s.Description = 'RFID FinishLynx middleware console'; $s.Save() }"
+rem Already running (a re-run to upgrade): don't start a second copy, and
+rem don't restart it here - a race may be running. (2026-10-05)
+set "RUNNING="
+netstat -ano -p tcp | findstr /r /c:":8080 .*LISTENING" >nul && set "RUNNING=1"
+if defined RUNNING (
+    echo   The console is already running on the old version. When no race is
+    echo   running, close its window and start it again from the Desktop
+    echo   "RFID Console" shortcut to load the new one.
+    explorer.exe "http://localhost:8080/"
+    goto launched
+)
 rem explorer.exe launches it de-elevated (as the normal user)
 explorer.exe "%TARGET%\deploy\start-console.bat"
 timeout /t 8 /nobreak >nul
 explorer.exe "http://localhost:8080/"
+:launched
 
 echo.
 echo ============================================================
@@ -151,7 +181,9 @@ echo   - Console page:      http://localhost:8080/
 echo   - Desktop shortcut:  "RFID Console" (also runs at logon)
 echo   - Is everything set? Click the "Console" chip at the top of the
 echo     page: its Setup check lists anything left, with the fix.
-echo   - MeetPro:           F.A.T. directory = %RESULTS%\RFID
+echo   - Meets:             Meet menu in the console (MileSplit entries, bibs,
+echo                        start lists, results). Using MeetPro instead?
+echo                        Its F.A.T. directory = %RESULTS%\RFID
 echo   - Guide:             %TARGET%\QUICK-START.html
 echo ============================================================
 echo.

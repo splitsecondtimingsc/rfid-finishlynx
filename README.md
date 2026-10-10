@@ -91,12 +91,9 @@ install.bat
 
 Or double-click `install.bat` in File Explorer.
 
-### Linux / Raspberry Pi
+### Raspberry Pi (split / check-in station)
 
-```bash
-chmod +x install.sh
-./install.sh
-```
+Use the station package: see [Station package (Raspberry Pi)](#station-package-raspberry-pi).
 
 ### Manual Installation
 
@@ -125,7 +122,15 @@ pip install -r requirements.txt
    ./RFID-FinishLynx.sh
    ```
 
-3. **Open the web interface**: Navigate to `http://localhost:8080` in your browser
+3. **Open the web interface**: Navigate to `http://localhost:8080` in your browser.
+   The finish console listens on this PC only (`127.0.0.1`): it has no
+   login, and nothing else on the timing network needs it. `--web-host
+   0.0.0.0` opens it to the network if that ever changes. A station
+   listens on every interface so its dashboard can be opened from the
+   laptop (`http://192.168.0.46:8080`); the classic dashboard's switch to
+   a remote reader no longer streams its reads (same-origin only) - open
+   the station's own address instead. Changes posted from another site's
+   page are refused.
 
 4. **Load event data**: Use Settings to load your `.evt` and `.ppl` files
 
@@ -485,8 +490,8 @@ in any power-on order: the LoRa link reconnects with 1-30 s backoff, the
 RFID reader is retried every 15 s by the hardware supervisor (including
 auto-configure, so a factory-fresh replacement reader is adopted without
 a keyboard), and FinishLynx reconnects on its own loop. `systemd` restarts
-the whole process if it ever dies (`deploy/rfid-remote.service`,
-installed by `deploy/install-station.sh` after each rsync).
+the whole process if it ever dies (`rfid-remote.service`, installed by
+`install-station.sh` from the station package below).
 
 Field diagnosis without a site visit: each station announces its state
 over LoRa, shown in the finish console's Remote stations panel -
@@ -528,6 +533,35 @@ back the ports it is actually polling. The same is available in the
 legacy dashboard's Remote Units card and via
 `POST /api/remote/units/<id>/config` (`{"section":"reader","values":
 {"antennas":[1,3,5,7]}}`, `[]` = every port).
+
+### Station package (Raspberry Pi)
+
+A split or check-in Pi runs a trimmed copy: only what `mode: remote_lap`
+needs (reader, radio, remote agent, LED clocks, the station dashboard),
+none of the meet management, race panes, FinishLynx PC tools, Windows
+Python or docs. Build it from a commit on the laptop:
+
+```bash
+python tools/build_station.py          # dist/rfid-station-<date>-<commit>.tar.gz
+```
+
+On the Pi, with internet once (pip):
+
+```bash
+tar xzf rfid-station-*.tar.gz && cd rfid_station
+./install-station.sh            # rfid-remote runs at boot
+./install-station.sh --beacon   # or the range-test beacon instead
+```
+
+The installer makes a venv from the station `requirements.txt`, creates
+`config.yaml` from the station example (or keeps the one in
+`~/rfid_finishlynx` from an older whole-repo install), adds the user to
+`dialout`, grants passwordless `sudo date` only (the clock step above), and
+installs both services, enabling one. Set `lora.reader_id` to the
+station's name: `S1`, `S2`, ... (the finish console's `point_labels`), or
+`CHUTE` for the check-in chute.
+To update, unpack a newer build over the folder and run the installer
+again; `config.yaml` is kept.
 
 ### Station Setup
 
@@ -602,8 +636,44 @@ python test_lora_link.py listen                        # finish line
 python test_lora_link.py send --reader-id S1 -c 10     # remote unit
 ```
 
-The listener validates each message's checksum, reader ID, sequence
-number and latency.
+The listener validates each message's checksum, reader ID and sequence
+number. Its "latency" is the listener's clock minus the sender's stamp, so
+with two unsynced clocks it mixes clock difference and delay; use the two
+tools below for real numbers.
+
+### Radio Delay and Station Clock
+
+A station's read times are converted into the finish console's clock with
+an offset learned from the GUN broadcasts, minus `lora.air_latency_sec`
+(the radio's one-way delay, default 0.3 s). If that constant is wrong,
+every read from the station is off by the difference.
+
+**Bench calibration** (once per radio setup): both gateways on one
+machine's switch (stop the console and `rfid-remote` first; a gateway
+serves one TCP client). One clock times every frame, so each direction is
+measured on its own:
+
+```bash
+python test_lora_link.py bench --a 192.168.0.60:8886 --b 192.168.0.61:8886 --count 10
+```
+
+It reports the GUN's one-way delay (its minimum is the right
+`air_latency_sec`), PING frames both ways and their asymmetry, and how much
+of each delay is the bits themselves at the air rate (the rest is gateway
+handling).
+
+**Clock check** (in the field, between races): the console's station
+popover, **Clock check → Ping 10 times**. Four timestamps per ping
+(console sends, station receives, station replies, console receives) give
+the round trip and how far the station's read times are from the
+console's clock, taken from the fastest round trips so buffered frames
+don't count. Off by more than 20 ms: **Apply** sends the suggested
+`air_latency_sec` to the station, which re-learns its clock within 30 s;
+ping again to confirm. The result is as good as the link is symmetric,
+which the bench calibration measures. Refused while a race is running
+(the pings would hold up its reads); about 2 minutes for 10 pings, since
+each radio transmits at most every ~5 s. API:
+`POST /api/remote/units/<id>/clock-check`, then `GET` the same path.
 
 > **Note:** a 1 W (30 dBm) radio can be damaged by transmitting with no
 > antenna attached. Connect antennas before sending.

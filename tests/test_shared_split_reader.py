@@ -71,10 +71,14 @@ class TestPassNumbering(unittest.TestCase):
         real = self.m.ingest("101", m(13), "S1")
         self.assertEqual(real["point"], "S2")
 
-    def test_third_pass_stays_mile_2(self):
+    def test_third_pass_is_ignored(self):
+        # one read per station per race (2026-10-09): a pass after the
+        # station's points is ignored (it used to count as Mile 2 again)
         for t in (6, 13):
             self.m.ingest("101", m(t), "S1")
-        self.assertEqual(self.m.ingest("101", m(20), "S1")["point"], "S2")
+        third = self.m.ingest("101", m(20), "S1")
+        self.assertEqual((third["state"], third["point"], third["crossing"]), ("ignored", "S2", "unexpected"))
+        self.assertEqual(self.splits("101"), ["S1", "S2"])
 
     def test_athletes_are_counted_independently(self):
         self.m.ingest("101", m(6), "S1")
@@ -83,9 +87,11 @@ class TestPassNumbering(unittest.TestCase):
         self.assertEqual(self.m.ingest("102", m(14), "S1")["point"], "S2")
 
     def test_other_readers_are_untouched(self):
+        # S2 hands out no points; its second crossing is not a second Mile 2
         self.m.ingest("101", m(9), "S2")
-        self.m.ingest("101", m(13), "S2")
-        self.assertEqual(self.splits("101"), ["S2", "S2"])
+        again = self.m.ingest("101", m(13), "S2")
+        self.assertEqual(self.splits("101"), ["S2"])
+        self.assertEqual((again["state"], again["point"]), ("ignored", "S2"))
 
     def test_unknown_bib_held_then_promoted_keeps_pass_order(self):
         # spectator loiter before the gun does not count as a pass
@@ -105,10 +111,12 @@ class TestPassNumbering(unittest.TestCase):
         bogus = self.m.ingest("101", m(4, 30), "S1")     # plausible for Mile 1, but wrong
         self.m.ingest("101", m(8), "S1")
         self.m.ingest("101", m(15), "S1")
-        self.assertEqual(self.splits("101"), ["S1", "S2", "S2"])
+        self.assertEqual(self.splits("101"), ["S1", "S2"])        # the third pass is ignored
         bogus_id = next(r.id for r in self.m.reads.values() if r.ts == m(4, 30))
         self.m.ignore_read(bogus_id)
         self.assertEqual(self.splits("101"), ["S1", "S2"])
+        real = {r.ts: r for r in self.m.reads.values()}
+        self.assertEqual((real[m(8)].point, real[m(15)].point, real[m(15)].state), ("S1", "S2", "assigned"))
 
     def test_manual_assign_of_held_reads_relabels_inside_the_race(self):
         # a boy (no open boys' race) runs with the girls: both passes held
@@ -151,12 +159,12 @@ class TestSwitchingTheSetting(unittest.TestCase):
     def test_turning_it_on_relabels_reads_already_heard(self):
         self.m.ingest("201", m(6), "S1")
         self.m.ingest("201", m(13), "S1")
-        self.assertEqual(self.points(), ["S1", "S1"])
+        self.assertEqual(self.points(), ["S1"])                   # one read per station
         self.m.set_reader_points({"S1": ["S1", "S2"]})
         self.assertEqual(self.points(), ["S1", "S2"])
-        # and off again: back to the reader id
+        # and off again: back to the reader id, one Mile 1
         self.m.set_reader_points({})
-        self.assertEqual(self.points(), ["S1", "S1"])
+        self.assertEqual(self.points(), ["S1"])
         self.assertTrue(all(r.reader == "" for r in self.m.reads.values()))
 
     def test_single_point_renames_a_station(self):
@@ -187,7 +195,8 @@ class TestSwitchingTheSetting(unittest.TestCase):
             reads = sorted(b.reads.values(), key=lambda r: r.ts)
             self.assertEqual([(r.reader, r.point) for r in reads], [("S1", "S1"), ("S1", "S2")])
             # a third pass after restart still counts from the restored ones
-            self.assertEqual(b.ingest("201", m(20), "S1")["point"], "S2")
+            third = b.ingest("201", m(20), "S1")
+            self.assertEqual((third["point"], third["state"]), ("S2", "ignored"))
 
 
 class TestLoopCourse(unittest.TestCase):

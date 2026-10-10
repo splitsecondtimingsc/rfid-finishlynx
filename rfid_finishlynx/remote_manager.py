@@ -12,9 +12,11 @@ from .config import LoRaConfig
 from .remote_protocol import (
     ManagementMessage,
     MessageType,
+    clock_check,
     format_cfgq,
     format_cfgs,
     format_cmd,
+    format_ping,
 )
 from .transport import LoRaTransport
 
@@ -55,6 +57,9 @@ class RemoteManager:
     """
 
     MAX_RETRIES = 2
+    # Clock check: one PING at a time. A reply waits out both radios' ~5 s
+    # send gaps and the clear-air logic, so allow well over that.
+    PING_REPLY_TIMEOUT_SEC = 25.0
 
     def __init__(
         self,
@@ -73,6 +78,8 @@ class RemoteManager:
         self._lock = threading.Lock()
         self._monitor_thread: Optional[threading.Thread] = None
         self._running = False
+        self._clock_checks: Dict[str, Dict] = {}     # reader_id -> latest clock check
+        self._pings: Dict[int, tuple] = {}           # seq -> (reader_id, Event, check)
 
         # Pre-register units from config
         for reader_id in config.pre_registered_units:
@@ -100,6 +107,8 @@ class RemoteManager:
 
         # Cancel pending futures
         with self._lock:
+            for _, replied, _ in self._pings.values():
+                replied.set()
             for pc in self._pending.values():
                 if not pc.future.done():
                     pc.future.set_result({"success": False, "message": "Manager stopped"})
@@ -219,6 +228,67 @@ class RemoteManager:
         logger.info(f"Sent CFGS section={section} to {reader_id}, seq={seq:02X}")
         return future
 
+    def start_clock_check(self, reader_id: str, count: int = 10) -> Dict:
+        """Ping a station `count` times in the background (get_clock_check)."""
+        with self._lock:
+            unit = self._units.get(reader_id)
+            if not unit:
+                return {"success": False, "message": "Unknown unit"}
+            if unit.state == "offline":
+                return {"success": False, "message": "Unit offline"}
+            current = self._clock_checks.get(reader_id)
+            if current and current["running"]:
+                return {"success": False, "message": "A clock check is already running"}
+            check = {"running": True, "count": count, "sent": 0, "samples": [], "air": None,
+                     "started": datetime.now().isoformat(timespec="seconds")}
+            self._clock_checks[reader_id] = check
+        threading.Thread(target=self._run_clock_check, args=(reader_id, check), daemon=True).start()
+        return {"success": True}
+
+    def get_clock_check(self, reader_id: str) -> Dict:
+        """Progress and, once some replies are in, the summary:
+        delay = round trip minus the station's hold; offset = the station's
+        read clock minus this PC's (+ = its read times are late); air_suggested
+        = the station's lora.air_latency_sec that would bring offset to 0."""
+        with self._lock:
+            check = self._clock_checks.get(reader_id)
+            if not check:
+                return {"running": False, "sent": 0, "replies": 0}
+            samples = list(check["samples"])
+            out = {k: check[k] for k in ("running", "count", "sent", "started", "air")}
+        out.update(clock_check(samples))
+        if samples and out["air"] is not None:
+            out["air_suggested"] = round(max(0.0, out["air"] - out["offset"]), 2)
+        return out
+
+    def _run_clock_check(self, reader_id: str, check: Dict):
+        for _ in range(check["count"]):
+            if not self._running:
+                break
+            seq = self._next_seq()
+            replied = threading.Event()
+            with self._lock:
+                self._pings[seq] = (reader_id, replied, check)
+                check["sent"] += 1
+            self._transport.send(format_ping(reader_id, seq))
+            replied.wait(self.PING_REPLY_TIMEOUT_SEC)
+            with self._lock:
+                self._pings.pop(seq, None)
+        with self._lock:
+            check["running"] = False
+        logger.info(f"Clock check {reader_id}: {self.get_clock_check(reader_id)}")
+
+    def _handle_pong(self, msg: ManagementMessage):
+        arrived = self._transport.clock()
+        with self._lock:
+            entry = self._pings.get(msg.seq)
+            if not entry or entry[0] != msg.reader_id:
+                return
+            f = msg.fields
+            entry[2]["samples"].append((f["t1"], f["t2"], f["t3"], arrived))
+            entry[2]["air"] = f["air"]
+        entry[1].set()
+
     def add_pre_registered(self, reader_id: str):
         """Add a pre-registered remote unit."""
         with self._lock:
@@ -243,6 +313,8 @@ class RemoteManager:
             self._handle_ack(msg)
         elif msg.msg_type == MessageType.CFGR:
             self._handle_cfgr(msg)
+        elif msg.msg_type == MessageType.PONG:
+            self._handle_pong(msg)
 
     def _handle_announce(self, msg: ManagementMessage):
         """Process an ANNOUNCE heartbeat from a remote unit."""

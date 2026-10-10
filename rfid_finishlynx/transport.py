@@ -2,6 +2,7 @@
 
 import logging
 import random
+import re
 import socket
 import threading
 import time
@@ -146,6 +147,22 @@ def _parse_read_time(time_str: str) -> datetime:
     if (timestamp - now).total_seconds() > 12 * 3600:
         timestamp -= timedelta(days=1)
     return timestamp
+
+
+JOURNAL_LINE_FMT = "%Y-%m-%d %H:%M:%S.%f"
+
+
+def journal_read_time(line_stamp: datetime, time_str: str) -> datetime:
+    """The full read time of a journal entry: its HH:MM:SS.mmm on the day the
+    line was written, moved a day when that puts it over 12 h away (a read
+    stamped just before midnight, journaled just after)."""
+    t = datetime.strptime(time_str, "%H:%M:%S.%f").time()
+    ts = datetime.combine(line_stamp.date(), t)
+    if (ts - line_stamp).total_seconds() > 12 * 3600:
+        ts -= timedelta(days=1)
+    elif (line_stamp - ts).total_seconds() > 12 * 3600:
+        ts += timedelta(days=1)
+    return ts
 
 
 def format_batch_message(reader_id: str, seq: int, reads) -> bytes:
@@ -324,6 +341,9 @@ class LoRaTransport(Transport):
         # so senders can clock retries from actual transmission rather
         # than from when a message entered the paced outbox.
         self.on_sent: Optional[Callable[[bytes], None]] = None
+        # Clock for the PING/PONG stamps (remote_protocol.clock_check). A
+        # station sets it to its corrected clock, the one its reads use.
+        self.clock: Callable[[], float] = time.time
 
         self._serial = None  # serial.Serial or _TcpStream
         self._connected = False
@@ -475,6 +495,10 @@ class LoRaTransport(Transport):
                 from .remote_protocol import restamp_gun
                 now = time.time()
                 data = b"".join(restamp_gun(line, now) for line in data.splitlines(keepends=True))
+            elif data.startswith((b"$PING,", b"$PONG,")):
+                # Clock check: same reason (they always travel alone)
+                from .remote_protocol import restamp_line
+                data = restamp_line(data, self.clock())
             try:
                 self._serial.write(data)
                 self._serial.flush()
@@ -587,8 +611,23 @@ class LoRaTransport(Transport):
         del self._outbox[:cut]
         logger.warning(f"LoRa backlog full, dropped {dropped} queued message(s)")
 
+    TIMING_FRAMES = (b"$PING,", b"$PONG,")
+
     def _take_from_outbox(self) -> bytes:
-        """Pull whole messages off the queue, up to one write's worth."""
+        """Pull whole messages off the queue, up to one write's worth.
+        A PING/PONG always goes in a write of its own, so both directions
+        carry the same bytes and the clock check measures like with like."""
+        if self._outbox.startswith(self.TIMING_FRAMES):
+            cut = self._outbox.find(b"\n") + 1 or len(self._outbox)
+            chunk = bytes(self._outbox[:cut])
+            del self._outbox[:cut]
+            return chunk
+        stop = min((i + 1 for i in (self._outbox.find(b"\n" + t) for t in self.TIMING_FRAMES) if i >= 0),
+                   default=None)
+        if stop is not None and stop <= self.MAX_WRITE_BYTES:
+            chunk = bytes(self._outbox[:stop])
+            del self._outbox[:stop]
+            return chunk
         if len(self._outbox) <= self.MAX_WRITE_BYTES:
             chunk = bytes(self._outbox)
             self._outbox.clear()
@@ -643,11 +682,16 @@ class LoRaTransport(Transport):
                     self._last_receive = time.monotonic()
                     self._rx_event.set()
 
-                    # Process complete messages (newline-terminated)
+                    # Process complete messages (newline-terminated). One
+                    # message that fails to process must not end reception
+                    # for the rest of the meet (2026-10-04 review).
                     while b"\n" in buffer:
                         line, buffer = buffer.split(b"\n", 1)
                         if line and self.on_receive:
-                            self.on_receive(line + b"\n")
+                            try:
+                                self.on_receive(line + b"\n")
+                            except Exception:
+                                logger.exception(f"LoRa message failed to process: {line[:80]!r}")
 
             except OSError as e:
                 logger.error(f"LoRa receive error: {e}")
@@ -744,6 +788,55 @@ class ReliableReadSender:
         self._running = False
         self._retry_thread: Optional[threading.Thread] = None
         transport.on_sent = self._on_transmitted
+        if journal_path:
+            self._restore()
+
+    # Reads this recent that the journal shows unacknowledged are sent
+    # again after a restart; matches the finish line's dedup memory
+    # (LoRaReceiver.READ_DEDUP_TTL_SEC), so a replay is never counted twice.
+    RESTORE_WINDOW_SEC = 6 * 3600.0
+    _JOURNAL_RE = re.compile(r"^(\S+ \S+) (READ|ACKED) (?:seq=\w+ )?bib=(\S+)(?: .*?t=(\S+))?")
+
+    def _restore(self):
+        """Queue the reads a previous run journaled but never got ACKed
+        (2026-10-04 review: a station restart abandoned them)."""
+        cutoff = datetime.now() - timedelta(seconds=self.RESTORE_WINDOW_SEC)
+        outstanding = []           # [bib, time_str, line stamp] in journal order
+        try:
+            with open(self._journal_path) as f:
+                for line in f:
+                    m = self._JOURNAL_RE.match(line)
+                    if not m:
+                        continue
+                    try:
+                        stamp = datetime.strptime(m.group(1), JOURNAL_LINE_FMT)
+                    except ValueError:
+                        continue
+                    if stamp < cutoff:
+                        continue
+                    event, bib, t = m.group(2), m.group(3), m.group(4)
+                    if event == "READ" and t:
+                        outstanding.append((bib, t, stamp))
+                    elif event == "ACKED":
+                        # older journals name no time: the oldest read of that bib
+                        i = next((i for i, o in enumerate(outstanding)
+                                  if o[0] == bib and (t is None or o[1] == t)), None)
+                        if i is not None:
+                            del outstanding[i]
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            logger.error(f"Read journal not readable, nothing restored: {e}")
+            return
+        if not outstanding:
+            return
+        for bib, t, stamp in outstanding:
+            ts = journal_read_time(stamp, t)
+            self._queue.append((bib, ts))
+            self._journal("RESTORED", bib, extra=f"t={t}")
+        self._queue_since = time.monotonic()
+        logger.warning(f"{len(outstanding)} read(s) the finish line never acknowledged "
+                       f"before the last stop: sending them again")
 
     def _on_transmitted(self, chunk: bytes):
         """Stamp pending batches that just left in this radio write."""
@@ -758,7 +851,7 @@ class ReliableReadSender:
                  extra: str = ""):
         if not self._journal_path:
             return
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        stamp = datetime.now().strftime(JOURNAL_LINE_FMT)
         line = f"{stamp} {event}"
         if seq is not None:
             line += f" seq={seq:02X}"
@@ -791,11 +884,11 @@ class ReliableReadSender:
             )
             if dropped:
                 logger.warning(f"Dropping {dropped} unacknowledged reads on stop")
-            for bib, _ts in self._queue:
-                self._journal("DROP", bib, extra="reason=stop")
+            for bib, ts in self._queue:
+                self._journal("DROP", bib, extra=f"reason=stop t={_format_read_time(ts)}")
             for seq, entry in self._pending.items():
-                for bib, _ts in entry["reads"]:
-                    self._journal("DROP", bib, seq, "reason=stop")
+                for bib, ts in entry["reads"]:
+                    self._journal("DROP", bib, seq, f"reason=stop t={_format_read_time(ts)}")
             self._queue.clear()
             self._pending.clear()
 
@@ -869,10 +962,10 @@ class ReliableReadSender:
                     f"Sequence {seq:02X} reused with {len(stale['reads'])} "
                     f"read(s) still unacknowledged - dropped"
                 )
-                for bib, _ts in stale["reads"]:
-                    self._journal("DROP", bib, seq, "reason=seq-reuse")
-            for bib, _ts in reads:
-                self._journal("SENT", bib, seq)
+                for bib, ts in stale["reads"]:
+                    self._journal("DROP", bib, seq, f"reason=seq-reuse t={_format_read_time(ts)}")
+            for bib, ts in reads:
+                self._journal("SENT", bib, seq, f"t={_format_read_time(ts)}")
             self._transport.send(message)
 
     def handle_ack(self, seq: int):
@@ -881,8 +974,8 @@ class ReliableReadSender:
             entry = self._pending.pop(seq, None)
         if entry is not None:
             logger.debug(f"Batch seq={seq:02X} acknowledged by finish line")
-            for bib, _ts in entry["reads"]:
-                self._journal("ACKED", bib, seq, f"retries={entry['retries']}")
+            for bib, ts in entry["reads"]:
+                self._journal("ACKED", bib, seq, f"retries={entry['retries']} t={_format_read_time(ts)}")
 
     @property
     def pending_count(self) -> int:

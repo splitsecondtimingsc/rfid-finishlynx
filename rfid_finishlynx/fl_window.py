@@ -28,8 +28,8 @@ def parse_title(title: str) -> Optional[Tuple[int, int, int, str]]:
     return int(m.group("e")), int(m.group("r")), int(m.group("h")), m.group("name")
 
 
-def _window_titles():
-    """Titles of visible top-level windows (Windows), else []."""
+def _window_titles(match=lambda t: t.startswith("FinishLynx - [")):
+    """Titles of visible top-level windows that `match` (Windows), else []."""
     if sys.platform != "win32":
         return []
     import ctypes
@@ -44,7 +44,7 @@ def _window_titles():
             if n:
                 buf = ctypes.create_unicode_buffer(n + 1)
                 user32.GetWindowTextW(hwnd, buf, n + 1)
-                if buf.value.startswith("FinishLynx - ["):
+                if match(buf.value):
                     titles.append(buf.value)
         return True
 
@@ -68,3 +68,13 @@ def open_event() -> Optional[Tuple[int, int, int, str]]:
         value = None
     _cache.update(at=now, value=value)
     return value
+
+
+def running() -> bool:
+    """FinishLynx has a window open (Windows; always False elsewhere).
+    Close meet waits for it: an open FinishLynx can hold its files or write
+    a .lif while they are being moved (2026-10-05)."""
+    try:
+        return bool(_window_titles(lambda t: t == "FinishLynx" or t.startswith("FinishLynx - ")))
+    except Exception:
+        return False

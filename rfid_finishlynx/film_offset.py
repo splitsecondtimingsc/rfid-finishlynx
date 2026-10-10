@@ -7,10 +7,15 @@ gives, per athlete, how much later (positive) or earlier the chip crossed
 the mat than the body crossed the line. The average over the meet is the
 "film offset"; the console subtracts it from every mat finish it reports
 and sends, so athletes who are never evaluated get film-like times too.
-It is learned PER RACE (user's rule 2026-10-01): each pane uses the mean
-of its own evaluated finishes, and a new race starts at zero until its
-first evaluations land in FinishLynx's .lif. A manual override is still one
+It is learned PER RACE (user's rule 2026-10-01): each pane uses its own
+evaluated finishes, and a new race starts at zero until its first
+evaluations land in FinishLynx's .lif. A manual override is still one
 number for every race.
+The mean is ROLLING (user's rule 2026-10-03, "finishers slow down as the
+race goes on"): a finish is corrected by the mean of the ROLLING_WINDOW
+evaluated finishes nearest before it in race time - the latest 20 for a
+read arriving now; a finisher ahead of the 20th evaluation uses the race's
+first 20.
 
 Telling an evaluated row from one FinishLynx merely copied from us: copied
 rows all sit at one constant distance from our raw time (FinishLynx's own
@@ -42,6 +47,7 @@ NEAR_ZERO_SEC = 0.1           # unless it sits where a clock-frame constant live
 BASELINE_TOL_SEC = 0.007      # a row this close to the baseline was not evaluated
 MAX_PLAUSIBLE_SEC = 5.0       # beyond this the .lif row is not the same crossing
 ANTENNA_MIN_SAMPLES = 5       # an antenna's own mean is used once it has this many
+ROLLING_WINDOW = 20           # evaluated finishes averaged for one correction
 
 
 def parse_race_time(text: str) -> Optional[float]:
@@ -151,27 +157,43 @@ class FilmOffset:
                 acc.setdefault(int(s.get("antenna") or 0), []).append(s["value"])
         return {a: (sum(v) / len(v), len(v)) for a, v in acc.items() if a}
 
-    def correction(self, antenna: int = 0, race: Optional[int] = None) -> float:
-        """Seconds to subtract from a finish read in `race` right now.
+    @staticmethod
+    def rolling_mean(samples: List[dict], at: Optional[float] = None) -> Optional[float]:
+        """Mean of the ROLLING_WINDOW samples nearest before race time `at`
+        (by the read's race time); the latest ones when `at` is None, the
+        first ones for a finish ahead of them all. None without samples."""
+        if not samples:
+            return None
+        ordered = sorted(samples, key=lambda s: s.get("raw", 0.0))
+        n = len(ordered)
+        before = n if at is None else sum(1 for s in ordered if s.get("raw", 0.0) <= at)
+        end = max(before, min(ROLLING_WINDOW, n))
+        window = ordered[max(0, end - ROLLING_WINDOW):end]
+        return sum(s["value"] for s in window) / len(window)
+
+    def correction(self, antenna: int = 0, race: Optional[int] = None,
+                   at: Optional[float] = None) -> float:
+        """Seconds to subtract from a finish read in `race` at race time
+        `at` (seconds after the gun; None = a read arriving now).
 
         0 when applying is off, and for a race with nothing evaluated yet
         (or no race at all: a held read) - each race learns its own. The
         mat's antennas sit at different distances from the line, so a port
-        with enough evaluated finishes in the race uses its own mean, else
-        the race's mean. A manual override is one number for everything.
+        with enough evaluated finishes in the race uses its own rolling
+        mean, else the race's. A manual override is one number for everything.
         """
         if not self.apply:
             return 0.0
         if self.manual is not None:
             return float(self.manual)
-        mean = self.learned(race)
-        if mean is None:
+        mine = [s for s in self.samples.values() if race is not None and s["race"] == race]
+        if not mine:
             return 0.0
         if antenna:
-            am = self.antenna_means(race).get(int(antenna))
-            if am and am[1] >= ANTENNA_MIN_SAMPLES:
-                return float(am[0])
-        return float(mean)
+            port = [s for s in mine if int(s.get("antenna") or 0) == int(antenna)]
+            if len(port) >= ANTENNA_MIN_SAMPLES:
+                return float(self.rolling_mean(port, at))
+        return float(self.rolling_mean(mine, at))
 
     def race_stats(self, key: int) -> dict:
         vals = self._values(key)
@@ -180,7 +202,8 @@ class FilmOffset:
             "samples": len(vals),
             "mean": self.learned(key),
             "spread": self.spread(key),
-            "applied": self.correction(0, key),
+            "applied": self.correction(0, key),        # latest ROLLING_WINDOW
+            "window": ROLLING_WINDOW,
             "antennas": [{"antenna": a, "samples": n, "mean": m,
                           "applied": self.apply and self.manual is None and n >= ANTENNA_MIN_SAMPLES}
                          for a, (m, n) in sorted(self.antenna_means(key).items())],
@@ -323,7 +346,8 @@ class FilmOffset:
             ants = ", ".join(f"A{a} {m:+.3f} ({n})" for a, (m, n) in sorted(self.antenna_means(race_key).items()))
             logger.info(f"Film offset: race {race_key} {len(new_samples)} evaluated, "
                         f"{unevaluated} copied, {stale} from before the reset, {outliers} implausible; race offset "
-                        f"{self.learned(race_key):+.3f} s"
+                        f"{self.learned(race_key):+.3f} s, latest {ROLLING_WINDOW} "
+                        f"{self.rolling_mean([s for s in new_samples.values()]):+.3f} s"
                         + (f"; by antenna {ants}" if ants else "")
                         if new_samples else
                         f"Film offset: race {race_key} nothing evaluated yet ({unevaluated} copied rows)")

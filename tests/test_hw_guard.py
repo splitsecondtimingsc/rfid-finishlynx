@@ -33,8 +33,13 @@ class TestLock(unittest.TestCase):
 
     def test_second_lock_in_another_process_is_refused(self):
         """The real case: the live console holds it, a staging copy asks."""
+        # The base interpreter, not sys.executable: under a Windows venv that
+        # is a launcher whose child Python holds the lock, so holder.pid was
+        # the wrong process and killing it left the lock held (2026-10-06).
+        # hw_guard is stdlib only, so no venv packages are needed.
+        python = getattr(sys, "_base_executable", None) or sys.executable
         holder = subprocess.Popen(
-            [sys.executable, "-c", textwrap.dedent(f"""
+            [python, "-c", textwrap.dedent(f"""
                 import sys, time
                 sys.path.insert(0, {repr(str(Path(__file__).resolve().parents[1]))})
                 from rfid_finishlynx.hw_guard import HardwareLock

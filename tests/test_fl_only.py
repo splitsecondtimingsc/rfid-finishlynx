@@ -87,6 +87,39 @@ class TestFinishLynxOnly(unittest.TestCase):
         os.utime(path, (t, t))
         self.assertNotIn("99", [r["bib"] for r in self.merge()["finishers"]])
 
+    def merged_bibs(self):
+        with open(os.path.join(self.rfid, "002-1-01.lif"), newline="") as f:
+            return [r[1] for r in rows_of(f.read())[1]]
+
+    def test_remove_from_race_drops_the_finishlynx_row(self):
+        # 2026-10-08: "Remove from race" only ignored chip reads, so a runner
+        # FinishLynx timed came straight back on the next merge.
+        self.merge()
+        self.mgr.remove_bib(self.key, "99")
+        self.assertNotIn("99", [r["bib"] for r in self.merge()["finishers"]])
+        self.assertNotIn("99", self.merged_bibs())
+        self.assertIn("1", self.merged_bibs())               # everyone else stays
+
+    def test_removed_with_a_chip_finish_stays_out(self):
+        self.mgr.races[self.key].roster.add("99")
+        self.mgr.ingest("99", GUN + timedelta(seconds=1139.5), "FINISH")
+        self.merge()
+        self.mgr.remove_bib(self.key, "99")
+        self.assertNotIn("99", [r["bib"] for r in self.merge()["finishers"]])
+
+    def test_removed_survives_a_restart_and_placing_back_undoes_it(self):
+        from rfid_finishlynx.races import RaceManager
+        self.merge()
+        self.mgr.state_path = os.path.join(self.lynx, "races-state.json")
+        self.mgr.remove_bib(self.key, "99")
+        again = RaceManager(state_path=self.mgr.state_path)
+        self.assertEqual(again.races[self.key].removed, {"99"})
+        state = self.mgr.races[self.key]
+        rid = self.mgr.add_manual_read(self.key, "99", GUN + timedelta(minutes=19), "FINISH")
+        self.assertIsNotNone(rid)
+        self.assertEqual(state.removed, set())
+        self.assertIn("99", [r["bib"] for r in self.merge()["finishers"]])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -444,5 +444,63 @@ class TestPerRace(unittest.TestCase):
         self.assertEqual(self.m.film.stats()["races"], [])
 
 
+def drifting(fo, race=1, n=60, antenna=0):
+    """n evaluated finishes 10 s apart from 15:00 on, the offset growing
+    by 0.01 s each (finishers slow down): sample i = 0.30 + 0.01 i."""
+    for i in range(n):
+        fo.samples[f"{race}:{i}"] = {"race": race, "bib": str(i), "raw": 900.0 + 10 * i,
+                                     "lif": 900.0, "value": round(0.30 + 0.01 * i, 3),
+                                     "antenna": antenna}
+
+
+class TestRollingWindow(unittest.TestCase):
+    """User's rule 2026-10-03: the offset is the rolling mean of the 20
+    evaluated finishes nearest before the athlete, not the race mean."""
+
+    def setUp(self):
+        self.fo = FilmOffset()
+        drifting(self.fo)
+
+    def test_read_now_uses_the_latest_20(self):
+        # samples 40..59 -> mean of 0.70..0.89
+        self.assertAlmostEqual(self.fo.correction(0, 1), 0.795, places=6)
+
+    def test_finisher_gets_the_20_before_them(self):
+        # 15:00 + 10 s x 30 -> samples 11..30 are at or before it
+        self.assertAlmostEqual(self.fo.correction(0, 1, at=1200.0), 0.505, places=6)
+
+    def test_early_finisher_uses_the_first_20(self):
+        self.assertAlmostEqual(self.fo.correction(0, 1, at=600.0), 0.395, places=6)
+
+    def test_fewer_than_20_is_the_plain_mean(self):
+        fo = FilmOffset()
+        drifting(fo, n=5)
+        self.assertAlmostEqual(fo.correction(0, 1, at=0.0), 0.32, places=6)
+        self.assertAlmostEqual(fo.correction(0, 1), 0.32, places=6)
+
+    def test_antenna_rolls_on_its_own_samples(self):
+        drifting(self.fo, race=1, n=10, antenna=3)      # replaces bibs 0..9 with port 3
+        port = sorted((s for s in self.fo.samples.values() if s["antenna"] == 3), key=lambda s: s["raw"])
+        want = sum(s["value"] for s in port) / len(port)
+        self.assertAlmostEqual(self.fo.correction(3, 1), want, places=6)
+
+    def test_manual_still_wins(self):
+        self.fo.set_manual(0.5)
+        self.assertEqual(self.fo.correction(0, 1, at=1200.0), 0.5)
+
+    def test_results_correct_each_finisher_by_their_own_window(self):
+        m = RaceManager(athlete_lookup=lookup, finish_readers={"FINISH"})
+        key = m.create_race("Girls 5K", event=1, gender="F", distance="5000")
+        m.set_gun(key, GUN, "camera start")
+        m.ingest("500", GUN + timedelta(seconds=1000), "FINISH")
+        m.ingest("501", GUN + timedelta(seconds=1200), "FINISH")
+        m.ingest("502", GUN + timedelta(seconds=1600), "FINISH")
+        drifting(m.film, race=key)
+        fin = {r["bib"]: r["finish"] for r in m.results(key)["finishers"]}
+        self.assertAlmostEqual(fin["500"]["correction"], 0.395, places=6)   # first 20 (only 11 before)
+        self.assertAlmostEqual(fin["501"]["correction"], 0.505, places=6)   # samples 11..30
+        self.assertAlmostEqual(fin["502"]["correction"], 0.795, places=6)   # after them all: latest 20
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,15 @@
+# Split / check-in station: reader + LoRa link + LED clocks, dashboard on :8080.
+# install-station.sh fills in @DIR@ and @USER@.
+[Unit]
+Description=RFID-FinishLynx station (remote_lap)
+After=network.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/venv/bin/python run.py --web-host 0.0.0.0 --web-port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

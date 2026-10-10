@@ -297,8 +297,10 @@ Examples:
     )
     parser.add_argument(
         "--web-host",
-        default="0.0.0.0",
-        help="Web interface host (default: 0.0.0.0)",
+        default=None,
+        help="Web interface address (default: 127.0.0.1 on the finish line - "
+             "nothing else on the network uses its console; 0.0.0.0 on a station, "
+             "whose dashboard is opened from the laptop)",
     )
     parser.add_argument(
         "--web-port",
@@ -344,7 +346,10 @@ Examples:
     if args.no_web:
         run_cli_mode(config)
     else:
-        run_web_mode(config, config_path, args.web_host, args.web_port)
+        # 2026-10-04 review: the console has no login, so the finish line
+        # listens only on this PC unless told otherwise
+        host = args.web_host or ("0.0.0.0" if config.mode == "remote_lap" else "127.0.0.1")
+        run_web_mode(config, config_path, host, args.web_port)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+# LoRa range test: beacons from power-on for an hour (range_test.py).
+# Shares the radio with rfid-remote, so only one of the two is enabled.
+# install-station.sh fills in @DIR@ and @USER@.
+[Unit]
+Description=RFID-FinishLynx LoRa range-test beacon
+After=network.target
+Conflicts=rfid-remote.service
+
+[Service]
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/venv/bin/python range_test.py beacon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

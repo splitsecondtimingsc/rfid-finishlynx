@@ -1,8 +1,8 @@
 """Build the hand-out zip another timer installs from (2026-09-30).
 
-    python tools\\build_package.py [--ref HEAD] [--out dist]
+    python tools\\build_package.py [--edition NAME] [--ref HEAD] [--out dist]
 
-Makes dist\\rfid-finishlynx-<date>-<commit>.zip holding one folder,
+Makes dist\\rfid-finishlynx-<edition>-<date>-<commit>.zip holding one folder,
 rfid_finishlynx\\, with INSTALL.bat at its top: the committed tree at --ref
 (git archive - so uncommitted edits are NOT in it; development-only paths
 are marked export-ignore in .gitattributes), plus
@@ -10,12 +10,18 @@ are marked export-ignore in .gitattributes), plus
     QUICK-START.pdf   QUICK-START.html printed by Edge (if Edge is there)
     support.key       the Send-logs key, copied from support.key next to this
                       repo (git-ignored; never published - see support.py)
+    EDITION.json      the edition's entry from tools/editions.json (2026-10-07):
+                      what INSTALL.bat sets meet sharing to ("public" = a
+                      Google Drive for desktop folder; another edition can
+                      name a private git repo). editions.json itself never
+                      leaves this repo.
 Python 3.12 and every package wheel are tracked in git (python\\, wheels\\),
 so the zip installs with no internet. The recipient unzips it and
 double-clicks INSTALL.bat - see QUICK-START.html.
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -60,6 +66,8 @@ def print_pdf(html_path: str, pdf_path: str) -> bool:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Build the hand-out zip")
     ap.add_argument("--ref", default="HEAD")
+    ap.add_argument("--edition", default="public",
+                    help="an entry of tools/editions.json (default public: Google Drive sharing)")
     ap.add_argument("--out", default=os.path.join(ROOT, "dist"))
     a = ap.parse_args(argv)
 
@@ -70,14 +78,21 @@ def main(argv=None) -> int:
         print("NOTE: uncommitted changes are NOT in the package (it is built from "
               f"{a.ref} = {commit}):\n  " + dirty.replace("\n", "\n  "))
     os.makedirs(a.out, exist_ok=True)
-    name = f"rfid-finishlynx-{datetime.now():%Y%m%d}-{commit}.zip"
+    with open(os.path.join(ROOT, "tools", "editions.json"), encoding="utf-8") as f:
+        editions = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    if a.edition not in editions:
+        sys.exit(f"--edition must be one of {', '.join(editions)}")
+    edition = dict(editions[a.edition], edition=a.edition)
+    name = f"rfid-finishlynx-{a.edition}-{datetime.now():%Y%m%d}-{commit}.zip"
     dest = os.path.join(a.out, name)
 
     with tempfile.TemporaryDirectory() as tmp:
         raw = os.path.join(tmp, "raw.zip")
         git("archive", "--format=zip", f"--prefix={PREFIX}", "-o", raw, a.ref)
         extras = {PREFIX + "VERSION.txt": f"RFID FinishLynx middleware\ncommit {commit} ({stamp})\n"
-                                          f"built {datetime.now():%Y-%m-%d %H:%M}\n".encode()}
+                                          f"edition {a.edition}\n"
+                                          f"built {datetime.now():%Y-%m-%d %H:%M}\n".encode(),
+                  PREFIX + "EDITION.json": json.dumps(edition, indent=1).encode()}
         # The Send-logs key (support.py): in the zip, never in git
         key_file = os.path.join(ROOT, "support.key")
         if os.path.isfile(key_file):
@@ -105,7 +120,7 @@ def main(argv=None) -> int:
                     out.writestr(n, data)
 
     size = os.path.getsize(dest) / 1e6
-    print(f"{dest}  ({size:.1f} MB, commit {commit})")
+    print(f"{dest}  ({size:.1f} MB, commit {commit}, edition {a.edition})")
     return 0
 
 

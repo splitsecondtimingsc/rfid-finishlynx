@@ -211,6 +211,22 @@ class SupportConfig:
 
 
 @dataclass
+class MeetSyncConfig:
+    """Meets shared between machines (meet_sync.py, docs/MEET-SYNC-PLAN.md).
+    mode "git": a private repo over SSH (remote, e.g. myserver:me/meets.git);
+    mode "folder": a shared folder such as Google Drive for desktop (folder).
+    mode "both": the two at once, each a backup of the other (2026-10-08);
+    remote may also be a folder (a network share on the NAS).
+    machine: this PC's name in file names (blank = the computer name)."""
+    enabled: bool = False
+    mode: str = "off"            # off | git | folder | both
+    remote: str = ""
+    folder: str = ""
+    machine: str = ""
+    git: str = ""                # git.exe when not on PATH / MinGit
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     camera_start: CameraStartConfig = field(default_factory=CameraStartConfig)
@@ -226,6 +242,7 @@ class Config:
     led_clock: LEDClockConfig = field(default_factory=LEDClockConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     support: SupportConfig = field(default_factory=SupportConfig)
+    meet_sync: MeetSyncConfig = field(default_factory=MeetSyncConfig)
     remote_readers: List[RemoteReaderEntry] = field(default_factory=list)
     event_directory: Optional[str] = None  # Directory containing lynx.evt and lynx.ppl
     evt_file: Optional[str] = None  # Name of the .evt file (e.g., "lynx.evt")
@@ -391,6 +408,18 @@ def load_config(config_path: Optional[str] = None) -> Config:
                 logs_repo=str(sp.get("logs_repo") or config.support.logs_repo),
                 logs_token=str(sp.get("logs_token") or ""),
                 site_name=str(sp.get("site_name") or ""),
+            )
+
+        if "meet_sync" in data:
+            ms = data["meet_sync"] or {}
+            mode = str(ms.get("mode") or "off").strip().lower()
+            config.meet_sync = MeetSyncConfig(
+                enabled=bool(ms.get("enabled", mode in ("git", "folder", "both"))),
+                mode=mode if mode in ("off", "git", "folder", "both") else "off",
+                remote=str(ms.get("remote") or ""),
+                folder=str(ms.get("folder") or ""),
+                machine=str(ms.get("machine") or ""),
+                git=str(ms.get("git") or ""),
             )
 
         # Load event directory and file

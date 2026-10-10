@@ -90,7 +90,8 @@ class TestStragglerMovedFromHeld(unittest.TestCase):
     """The operator's flow: a Men's straggler crosses after the Men's race
     was closed and the girls run -> Held; the operator assigns him to the
     closed Men's race -> he must NOT go to FinishLynx (it has the girls
-    open); the pane offers "Save to .lif" once FinishLynx lists him untimed."""
+    open); his chip finish goes into the .lif at once although FinishLynx
+    lists him untimed (user's rule 2026-10-03: placing him IS the release)."""
 
     def tearDown(self):
         _OPEN["value"] = None
@@ -108,7 +109,8 @@ class TestStragglerMovedFromHeld(unittest.TestCase):
         self.assertEqual((r.state, r.race, r.unsent), ("assigned", men, "other"))
         mgr._fl_untimed[men] = {"1190"}                 # FinishLynx's Men's file: entered, no time
         fin = next(x for x in mgr.results(men)["finishers"] if x["bib"] == "1190")["finish"]
-        self.assertTrue(fin["fl_untimed"] and fin["not_in_finishlynx"])
+        self.assertTrue(fin["not_in_finishlynx"])
+        self.assertEqual((fin["fl_untimed"], fin["chip_in_lif"]), (False, True))
 
     def test_assigned_to_the_open_race_it_does_go(self):
         app, mgr, men, women = meet()

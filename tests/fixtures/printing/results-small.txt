@@ -1,0 +1,28 @@
+                             rfid-meet  10/10/2026 12:05 PM
+         Test Invitational - 10/10/2026 / Hosted by Ridge High School / Results
+
+Event 1  Girls 5k Run CC Varsity
+=======================================================================================
+ Pl    Bib Name                     Yr School                    Finals Avg/Mile Points
+  1 #  101 Birch, Avery             12 Ridge High School       18:23.52     5:55      1
+  2 #  201 Núñez, Zoë               11 Valley Christian        18:30.00     5:57      2
+  3 #  102 Dunmore, Casey           10 Ridge High School       18:35.26     5:59      3
+  4 #  900 Moss, Lee                11 Unattached              18:40.40     6:01
+  5 #  202 Ellery, Dana              9 Valley Christian        18:44.90     6:02      4
+  6 #  301 Garth, Finley            11 Hillcrest               18:50.00     6:04
+  7 #  104 Ives, Harper             10 Ridge High School       18:53.30     6:05     EX
+  8 #  103 Fontaine-Whitlock-Aberna 12 Ridge High School       19:00.12     6:07      5
+  9 #  203 Hollis, Gray             12 Valley Christian        19:10.00     6:10      6
+ 10 #  204 Jarvis, Indy             11 Valley Christian        19:26.66     6:16      7
+ -- #  302 Keane, Jules             10 Hillcrest                    DNF
+ -- #  105 Lark, Kai                SR Ridge High School            DNS
+EX = exhibition: runs, does not score or displace
+
+                       Team Scores
+Rank Team                       Total    1    2    3   *4
+=========================================================
+   1 Ridge High School              9    1    3    5
+      Total Time:    55:58.89   Average: 18:39.63
+   2 Valley Christian              12    2    4    6    7
+      Total Time:    56:24.90   Average: 18:48.30
+     Hillcrest                    1/3  incomplete, not scored

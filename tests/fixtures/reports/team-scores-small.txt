@@ -1,0 +1,49 @@
+                                 rfid-meet  10/10/2026 12:05 PM
+           Report Test Meet - 10/10/2026 / Hosted by Ridge High School / Team Scores
+                                        Score Breakdown
+
+Event 1  Girls 5k Run CC Varsity
+Rank Team                     Score Scoring order                 Total Time   Average   Spread
+       Pl Name                        Bib Yr        Time   Pts
+===============================================================================================
+   1 Ridge High School           11 1-4-6(8)                        55:56.82  18:38.94  0:29.78
+        1 Birch, Avery                101 12    18:23.52     1
+        5 Dunmore, Casey              102 10    18:40.00     4
+        8 Fenwick, Emery              103 12    18:53.30     6
+       11 Ives, Harper                104 10    19:10.00   (8)
+
+   2 Valley Christian            18 2-7-9(11)                       56:56.78  18:58.93  0:56.66
+     Tie-break *4: 11
+        2 Núñez, Zoë                  201 11    18:30.00     2
+       10 Ellery, Dana                202  9    19:00.12     7
+       12 Hollis, Gray                203 12    19:26.66     9
+       14 Jarvis, Indy                204 11    19:35.50  (11)
+
+   3 Brookfield                  18 3-5-10                          56:47.15  18:55.72  0:57.75
+     Tie-break *4: none
+        3 Calder, Blake               401 12    18:32.25     3
+        6 Moss, Lee                   402 11    18:44.90     5
+       13 Pryor, Parker               403 10    19:30.00    10
+
+     Hillcrest                  2/3  incomplete, not scored
+        7 Garth, Finley               301 11    18:50.00
+       15 Keane, Jules                302 10    19:50.00
+
+Event 2  Boys 5k Run CC Varsity
+Rank Team                     Score Scoring order                 Total Time   Average   Spread
+       Pl Name                        Bib Yr        Time   Pts
+===============================================================================================
+   1 Ridge High School            9 1-3-5(7)                        51:30.00  17:10.00  0:40.00
+        1 Quill, Reese                111 12    16:50.00     1
+        3 Rowe, Oakley                112 11    17:10.00     3
+        5 Sable, Blake                113 10    17:30.00     5
+        8 Thorne, Noel                114  9    18:00.00   (7)
+
+   2 Valley Christian            12 2-4-6(8)                        52:10.00  17:23.34  0:50.00
+        2 Abbot, Gray                 211 12    17:00.00     2
+        4 Bellamy, José               212 11    17:20.00     4
+        7 Castellanos-Whitfield, S    213 10    17:50.00     6
+        9 Dorsey, Lane                214  9    18:10.00   (8)
+
+     Hillcrest                  1/3  incomplete, not scored
+        6 Ewing, Quinn                311 11    17:40.00

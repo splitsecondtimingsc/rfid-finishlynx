@@ -7,7 +7,7 @@ Row: {group, id, label, ok, detail, fix}
     judge yet (e.g. no clock plugged in, MeetPro on another PC).
 
 Everything here only READS: Lynx.cfg, MeetPro's preferences, the driver
-store, the live status. Fixing is the installer's / the operator's job.
+store, the live status, the open meet's last start-list write. Fixing is the installer's / the operator's job.
 """
 
 import ipaddress
@@ -96,7 +96,8 @@ def meetpro_row(results: str, rfid: str) -> Dict:
     """Does MeetPro write the start lists into the RFID folder? MeetPro often
     runs on another laptop through a share, so where its NEWEST start lists
     land is the evidence; its preferences on this PC are only a fallback
-    (on this rig they were a year stale, 2026-09-30)."""
+    (on this rig they were a year stale, 2026-09-30). Only asked with no
+    meet open on the Meet tab; an open meet writes its own (meet_start_lists_row)."""
     label = "MeetPro writes the start lists into the RFID folder"
     fix = f"MeetPro: Interfaces -> F.A.T. -> Setup -> Directory = {rfid} (from another laptop: the same folder over the share)"
     in_rfid, in_results = start_lists_at(rfid), start_lists_at(results)
@@ -109,9 +110,47 @@ def meetpro_row(results: str, rfid: str) -> Dict:
     mp = meetpro_fat_directory()
     if mp is None:
         return _row("Folders", "meetpro_dir", label, None,
-                    "no start lists yet - they appear when MeetPro exports to F.A.T.")
+                    "no start lists yet - open or import a meet on the Meet tab, "
+                    "or export them from MeetPro to F.A.T.")
     return _row("Folders", "meetpro_dir", label, lynx_cfg._norm(mp) == lynx_cfg._norm(rfid),
                 f"no start lists yet; MeetPro on this PC is set to {mp}", fix)
+
+
+def meet_start_lists_row(sl: Dict, rfid: str) -> Dict:
+    """An open meet writes lynx.evt/.ppl/.sch itself on every change
+    (meet_service), so judge that write, not MeetPro (2026-10-05: the
+    MeetPro row went green on the console's own files and named MeetPro
+    to an operator who never uses it)."""
+    label = f"Start lists from the open meet into the RFID folder ({rfid})"
+    errors, skipped = sl.get("errors") or [], sl.get("skipped")
+    if errors:
+        return _row("Folders", "meet_start_lists", label, False, f"not written: {errors[0]}",
+                    f"{rfid} must exist and not be read-only; the Meet tab's Info page shows the "
+                    "error. Any change to the meet writes them again.")
+    if skipped == "no folder":
+        return _row("Folders", "meet_start_lists", label, False, "not written: no results folder set",
+                    "Meet tab -> the Lynx folder button -> the FinishLynx results folder (C:\\Finish_Lynx_Results).")
+    if skipped == "file only":
+        return _row("Folders", "meet_start_lists", label, None,
+                    "meet opened without FinishLynx: start lists are not written")
+    if skipped == "preview":
+        return _row("Folders", "meet_start_lists", label, None, "preview copy: never written")
+    if skipped == "empty meet":
+        return _row("Folders", "meet_start_lists", label, None,
+                    "nothing to write yet - import the entries on the Meet tab")
+    if not sl.get("written_at"):
+        # nothing written since the console started: the files from before
+        # the restart are still FinishLynx's start lists
+        on_disk = start_lists_at(rfid)
+        if on_disk:
+            return _row("Folders", "meet_start_lists", label, True,
+                        "in the folder since " + time.strftime("%Y-%m-%d %H:%M", time.localtime(on_disk)))
+        return _row("Folders", "meet_start_lists", label, None,
+                    "not written yet - any change to the meet writes them")
+    when = str(sl["written_at"]).replace("T", " ")[:16]
+    warns = sl.get("warnings") or []
+    return _row("Folders", "meet_start_lists", label, True,
+                f"written {when}" + (f" ({len(warns)} warning{'s' if len(warns) != 1 else ''})" if warns else ""))
 
 
 def main(argv=None) -> int:
@@ -226,7 +265,9 @@ def run(app) -> List[Dict]:
     rows.append(_row("Folders", "rfid_dir", f"Results folder + RFID subfolder ({rfid})", os.path.isdir(rfid),
                      "exists" if os.path.isdir(rfid) else "missing",
                      f"Create {rfid} (INSTALL.bat does)."))
-    rows.append(meetpro_row(results, rfid))
+    svc = getattr(app, "meet_service", None)
+    sl = svc.start_lists_status() if svc is not None and getattr(svc, "active", False) else None
+    rows.append(meet_start_lists_row(sl, rfid) if sl is not None else meetpro_row(results, rfid))
 
     # ------------------------------------------------------------ camera start
     if cfg.camera_start.enabled:

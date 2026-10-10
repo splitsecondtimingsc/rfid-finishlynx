@@ -1,6 +1,7 @@
 """Web interface for RFID-FinishLynx middleware."""
 
 import csv
+import importlib.util
 import io
 import logging
 import re
@@ -9,6 +10,7 @@ import threading
 from collections import deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, List, Optional
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, render_template, request, Response
 from flask_socketio import SocketIO
@@ -88,6 +90,19 @@ def parse_ppl_file(filepath: str) -> dict:
         return {'by_bib': {}, 'by_school_gender': {}, 'loaded': False}
 
 
+def _bare_name(name, ext: str) -> str:
+    """A file name sent by the page: no folders, not absolute, and the
+    expected extension. These routes wrote any content to any path the
+    request named (2026-10-04 review); the folder stays the operator's pick."""
+    name = str(name or "").strip()
+    if (not name or name in (".", "..") or "/" in name or "\\" in name
+            or os.path.isabs(name) or os.path.basename(name) != name):
+        raise ValueError(f"not a plain file name: {name!r}")
+    if not name.lower().endswith(ext):
+        raise ValueError(f"only {ext} files can be saved here")
+    return name
+
+
 def start_list_dir(directory: str) -> str:
     """Where the meet's lynx.evt / lynx.ppl are: MeetPro writes them into
     the RFID subfolder of the Lynx results folder (see lif_merge.py); an
@@ -120,7 +135,20 @@ def load_ppl_from_directory(directory: str) -> bool:
 
 
 def get_athlete_info(bib: str) -> dict:
-    """Get athlete info by bib number."""
+    """Get athlete info by bib number.
+
+    Meet mode (2026-10-03): the active meet answers first (panes, tag reads
+    and bib validation all come through here); a bib the meet doesn't know
+    falls back to the .ppl, so a legacy tag still gets a name. {} = unknown."""
+    svc = getattr(_application, 'meet_service', None) if _application is not None else None
+    if svc is not None:
+        try:
+            info = svc.athlete_lookup(bib)
+        except Exception:
+            logger.debug("meet athlete lookup failed", exc_info=True)
+            info = None
+        if info:
+            return info
     with _athlete_lock:
         return _athlete_data['by_bib'].get(bib, {})
 
@@ -1259,7 +1287,23 @@ template_dir = os.path.join(os.path.dirname(__file__), 'templates')
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
 app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 app.config['SECRET_KEY'] = 'rfid-finishlynx-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+# Same-origin only (the default): a page from another site must not drive
+# the console over its socket (2026-10-04 review)
+socketio = SocketIO(app, async_mode='threading')
+
+
+@app.before_request
+def _same_origin_only():
+    """Refuse a change sent by another site's page in this browser: with no
+    login, the browser's Origin header is what tells the console's own page
+    from a malicious one. Tools without a browser send no Origin."""
+    if request.method in ('GET', 'HEAD', 'OPTIONS'):
+        return None
+    origin = request.headers.get('Origin')
+    if origin and (origin == 'null' or urlsplit(origin).netloc != request.host):
+        logger.warning(f"Refused {request.method} {request.path} from {origin}")
+        return jsonify({'error': 'cross-site request refused'}), 403
+    return None
 
 # Reference to main application (set during startup)
 _application: Optional['Application'] = None
@@ -1269,7 +1313,8 @@ _application: Optional['Application'] = None
 # Every button that changes something is a POST to /api/...: one "UI:" line
 # each, with the pane or read it touched, so a log sent for support shows
 # what the operator did (most actions logged nothing before).
-_UI_HIDDEN = {"token", "logs_token", "password"}
+# "email" too (2026-10-03): the MileSplit login posts {email, password}.
+_UI_HIDDEN = {"token", "logs_token", "password", "email"}
 
 
 @app.before_request
@@ -1325,10 +1370,12 @@ def set_application(application: 'Application'):
         logger.exception("Meet folder autoload failed")
     # After a self-update: once this version has run for 90 s it is kept
     # (deploy/boot_guard.py rolls back one that keeps failing to start).
-    from . import updater
-    t = threading.Timer(90.0, lambda: updater.confirm())
-    t.daemon = True
-    t.start()
+    # Stations update from tools/build_station.py packages, not GitHub.
+    if application.config.mode == "finish_line":
+        from . import updater
+        t = threading.Timer(90.0, lambda: updater.confirm())
+        t.daemon = True
+        t.start()
 
 
 def emit_tag_read(bib: str, timestamp: datetime, reader_id: str,
@@ -1513,12 +1560,19 @@ def index():
     return render_template('index.html')
 
 
+def _console_page():
+    """console.html, or the dashboard in the station package (no console)."""
+    if not os.path.exists(os.path.join(app.root_path, app.template_folder, 'console.html')):
+        return render_template('index.html')
+    return render_template('console.html')
+
+
 @app.route('/console')
 def console():
     """The finish-line pane console, addressable directly so the legacy
     dashboard can always link back to it (the root route falls back to
     the legacy page when no race manager exists)."""
-    return render_template('console.html')
+    return _console_page()
 
 
 @app.route('/classic')
@@ -1550,8 +1604,12 @@ def api_setup_check():
 
 
 def _support_key_set(config) -> bool:
-    """A Send-logs key is there (typed in, or support.key from the install)."""
-    from .support import effective_token
+    """A Send-logs key is there (typed in, or support.key from the install).
+    The station package has no support.py: never."""
+    try:
+        from .support import effective_token
+    except ImportError:
+        return False
     return bool(effective_token(config))
 
 
@@ -2202,6 +2260,10 @@ def api_export_reads_lif():
     if custom_filename:
         # Ensure .lif extension
         filename = custom_filename if custom_filename.endswith('.lif') else f"{custom_filename}.lif"
+        try:
+            filename = _bare_name(filename, '.lif')
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
     else:
         # Default to time-based filename
         filename = f"results_{datetime.now().strftime('%H%M%S')}.lif"
@@ -2246,8 +2308,11 @@ def api_save_adjusted_lif():
 
     data = request.get_json() or {}
     content = data.get('content', '')
-    filename = data.get('filename', 'adjusted.lif')
     original_path = data.get('originalPath', '')
+    try:
+        filename = _bare_name(data.get('filename', 'adjusted.lif'), '.lif')
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
     if not content:
         return jsonify({'error': 'No content provided'}), 400
@@ -2837,6 +2902,28 @@ def api_remote_command(reader_id):
     return jsonify(result)
 
 
+@app.route('/api/remote/units/<reader_id>/clock-check', methods=['POST'])
+def api_remote_clock_check_start(reader_id):
+    """Ping a station to measure the radio round trip and its clock error.
+    Body: {"count": 10}. Runs in the background; poll with GET."""
+    if not _application:
+        return jsonify({'error': 'Application not initialized'}), 503
+    count = int((request.json or {}).get('count', 10))
+    if not 1 <= count <= 50:
+        return jsonify({'error': 'count must be 1-50'}), 400
+    result = _application.start_clock_check(reader_id, count)
+    return jsonify(result), (200 if result.get('success') else 409)
+
+
+@app.route('/api/remote/units/<reader_id>/clock-check')
+def api_remote_clock_check(reader_id):
+    """Progress / result of the latest clock check (seconds; offset + = the
+    station's read times are late)."""
+    if not _application:
+        return jsonify({'error': 'Application not initialized'}), 503
+    return jsonify(_application.get_clock_check(reader_id))
+
+
 @app.route('/api/remote/units/<reader_id>/config', methods=['GET'])
 def api_remote_get_config(reader_id):
     """Get remote unit config. Query param: ?section=all|reader|timing|lora|logging."""
@@ -3009,6 +3096,165 @@ def api_support_settings():
 
 
 # --- Athlete/PPL API endpoints ---
+
+@app.route('/api/fs/dirs')
+def api_fs_dirs():
+    """Folder picker for the Lynx folder dialog (2026-10-03, user's ask: a
+    browser's own picker never gives the console a full path). Subfolder
+    names of `path` only - no files, no contents - plus its parent, the
+    drives on Windows, and whether lynx.evt/.ppl or an RFID folder is there.
+    `child` (a name from `dirs`) is joined here, so the page never builds paths.
+    No path: the current event directory, else home; a path that is gone
+    walks up to the nearest folder that exists."""
+    path = request.args.get('path', '').strip()
+    if not path:
+        path = (_application.config.event_directory if _application else '') or os.path.expanduser('~')
+    child = request.args.get('child', '').strip()
+    if child:
+        path = os.path.join(path, child)
+    path = os.path.abspath(os.path.expanduser(path))
+    while not os.path.isdir(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    dirs, files = [], set()
+    try:
+        for e in os.scandir(path):
+            try:
+                if e.is_dir():
+                    if not e.name.startswith(('.', '$')):
+                        dirs.append(e.name)
+                else:
+                    files.add(e.name.lower())
+            except OSError:
+                continue
+    except OSError as e:
+        return jsonify({'error': str(e), 'path': path}), 400
+    dirs.sort(key=str.lower)
+    parent = os.path.dirname(path)
+    drives = []
+    if os.name == 'nt':
+        drives = [f'{c}:\\' for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.isdir(f'{c}:\\')]
+    return jsonify({'path': path, 'parent': None if parent == path else parent, 'dirs': dirs,
+                    'drives': drives, 'lynx_files': sorted(files & {'lynx.evt', 'lynx.ppl', 'lynx.sch'}),
+                    'has_rfid': any(d.lower() == 'rfid' for d in dirs)})
+
+
+# Native file dialogs (2026-10-03, user's ask), run in their own process so
+# Tk never shares the server's threads. Windows timing PCs: tkinter (the
+# modern Explorer dialogs; Tcl/Tk ships with the installed Python). Linux
+# dev: zenity. They open on the console PC's own screen, so only a browser on
+# that PC may ask for one; anything else gets 403 and the page falls back.
+_TK_PICK = (
+    "import sys, json, tkinter as tk; from tkinter import filedialog as fd\n"
+    "a = json.loads(sys.argv[1]); r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+    "ft = ([(a['desc'] or a['ext'], '*' + a['ext'])] if a['ext'] else []) + [('All files', '*.*')]\n"
+    "if a['mode'] == 'dir': p = fd.askdirectory(parent=r, initialdir=a['start'], title=a['title'], mustexist=True)\n"
+    "elif a['mode'] == 'open': p = fd.askopenfilename(parent=r, initialdir=a['start'], title=a['title'], filetypes=ft)\n"
+    "else: p = fd.asksaveasfilename(parent=r, initialdir=a['start'], initialfile=a['name'], title=a['title'], "
+    "defaultextension=a['ext'], filetypes=ft, confirmoverwrite=True)\n"
+    "print(p or '')")
+_LAST_DIR = {}          # mode -> folder last picked in, for the next dialog
+
+
+def _local_request() -> bool:
+    host = request.host.rsplit(':', 1)[0].strip('[]')
+    return request.remote_addr in ('127.0.0.1', '::1', host)
+
+
+def _native_pick(mode: str, start: str = '', title: str = '', name: str = '', ext: str = '', desc: str = ''):
+    """mode dir | open | save -> (path or None if cancelled, error or None)."""
+    import json as _json
+    import shutil
+    import subprocess
+    import sys
+    start = os.path.abspath(start) if start else ''
+    if not start or not os.path.isdir(start):
+        start = _LAST_DIR.get(mode) or (_application.config.event_directory if _application else '') or ''
+        if not os.path.isdir(start):
+            start = os.path.expanduser('~')
+    title = title or {'dir': 'Choose a folder', 'open': 'Open', 'save': 'Save as'}[mode]
+    if os.name != 'nt' and shutil.which('zenity'):
+        cmd = ['zenity', '--file-selection', '--title=' + title]
+        if mode == 'dir':
+            cmd += ['--directory', '--filename=' + os.path.join(start, '')]
+        else:
+            if mode == 'save':
+                cmd += ['--save', '--confirm-overwrite', '--filename=' + os.path.join(start, name)]
+            else:
+                cmd += ['--filename=' + os.path.join(start, '')]
+            if ext:
+                cmd += [f'--file-filter={desc or ext} | *{ext}', '--file-filter=All files | *']
+    else:
+        cmd = [sys.executable, '-c', _TK_PICK, _json.dumps({'mode': mode, 'start': start, 'title': title,
+                                                             'name': name, 'ext': ext, 'desc': desc})]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', timeout=600,
+                           env=dict(os.environ, PYTHONIOENCODING='utf-8'),
+                           creationflags=0x08000000 if os.name == 'nt' else 0)   # CREATE_NO_WINDOW
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f'no file dialog: {e}'
+    path = r.stdout.strip()
+    if not path:
+        if r.returncode not in (0, 1):                     # zenity: 1 = cancelled
+            return None, 'no file dialog: ' + (r.stderr.strip().splitlines() or ['failed'])[-1]
+        return None, None
+    path = os.path.normpath(path)
+    _LAST_DIR[mode] = path if mode == 'dir' else os.path.dirname(path)
+    return path, None
+
+
+@app.route('/api/fs/pick', methods=['POST'])
+def api_fs_pick():
+    """The OS dialog: {mode: dir|open|save, path?, title?, name?, ext?, desc?}
+    -> {"path": picked} ({"path": null} = cancelled). Lynx folder Browse…,
+    Open another meet's Browse…"""
+    if not _local_request():
+        return jsonify({'error': 'the file dialog opens on the console PC'}), 403
+    d = request.get_json(silent=True) or {}
+    mode = d.get('mode', 'dir')
+    if mode not in ('dir', 'open', 'save'):
+        return jsonify({'error': 'mode must be dir, open or save'}), 400
+    path, err = _native_pick(mode, str(d.get('path') or '').strip(), str(d.get('title') or ''),
+                             str(d.get('name') or ''), str(d.get('ext') or ''), str(d.get('desc') or ''))
+    if err:
+        return jsonify({'error': err}), 501
+    return jsonify({'path': path})
+
+
+@app.route('/api/fs/save', methods=['POST'])
+def api_fs_save():
+    """Save as… through the OS dialog (2026-10-03): {url, name, ext, desc} -
+    the console fetches its own `url` (an /api/ export or printout), asks
+    where it goes (name + folder, last folder remembered) and writes it
+    there. {"path": null} = cancelled. 403 off the console PC / 501 with no
+    dialog: the page then uses the browser's own save or a download."""
+    if not _local_request():
+        return jsonify({'error': 'the file dialog opens on the console PC'}), 403
+    d = request.get_json(silent=True) or {}
+    url = str(d.get('url') or '')
+    if not url.startswith('/api/') or url.startswith('/api/fs/'):
+        return jsonify({'error': 'not an export'}), 400
+    with app.test_client() as c:
+        r = c.get(url)
+    if r.status_code != 200:
+        try:
+            err = (r.get_json(silent=True) or {}).get('error')
+        except Exception:
+            err = None
+        return jsonify({'error': err or f'export failed ({r.status_code})'}), 400
+    name = os.path.basename(str(d.get('name') or 'export'))
+    path, err = _native_pick('save', '', 'Save as', name, str(d.get('ext') or ''), str(d.get('desc') or ''))
+    if err:
+        return jsonify({'error': err}), 501
+    if not path:
+        return jsonify({'path': None})
+    try:
+        with open(path, 'wb') as f:
+            f.write(r.get_data())
+    except OSError as e:
+        return jsonify({'error': f'could not write {path}: {e}'}), 500
+    logger.info(f"Saved {url.split('?')[0]} to {path}")
+    return jsonify({'path': path})
+
 
 @app.route('/api/athletes/load', methods=['POST'])
 def api_load_athletes():
@@ -3825,6 +4071,10 @@ def api_save_evt():
     if not filename or not content:
         logger.error(f"api_save_evt: Missing required fields - filename={bool(filename)}, content={bool(content)}")
         return jsonify({'error': 'filename and content required'}), 400
+    try:
+        filename = _bare_name(filename, '.evt')
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
     if not target_dir:
         logger.error("api_save_evt: target_dir is required but not provided")
@@ -3982,6 +4232,16 @@ def _races_payload() -> dict:
     if _application is not None and hasattr(_application, "lif_dirs"):
         lynx_dir, rfid_dir = _application.lif_dirs()
         payload["lif_dirs"] = {"finishlynx": lynx_dir, "rfid": rfid_dir}
+    svc = getattr(_application, 'meet_service', None) if _application is not None else None
+    if svc is not None:
+        try:
+            payload["divisions"] = svc.pane_divisions()      # race tags (2026-10-05)
+        except Exception:
+            logger.exception("pane divisions failed")
+        try:
+            payload["issues"] = svc.pane_issues()            # flagged runners (2026-10-06)
+        except Exception:
+            logger.exception("pane issues failed")
     with _evt_monitor_lock:
         payload["evt_sync"] = _evt_monitor_state.get('last_sync')
     return payload
@@ -3991,6 +4251,15 @@ def emit_races_update():
     mgr = _race_manager()
     if mgr:
         socketio.emit('races_update', _races_payload())
+
+
+def emit_meet_update(summary: Optional[dict] = None):
+    """Push the meet summary (MEET-API.md) after a meet edit; consoles also
+    re-fetch GET /api/meet on connect."""
+    if summary is None:
+        svc = getattr(_application, 'meet_service', None) if _application is not None else None
+        summary = svc.summary() if svc is not None else {"active": False}
+    socketio.emit('meet_update', summary)
 
 
 def _parse_elapsed(value: str) -> float:
@@ -4027,7 +4296,7 @@ def _parse_clock(value: str) -> datetime:
 @app.route('/races')
 def races_page():
     """Alias kept for muscle memory; the panes live on the root console."""
-    return render_template('console.html')
+    return _console_page()
 
 
 @app.route('/api/races')
@@ -4106,26 +4375,110 @@ def _meet_archive_dir(mgr) -> str:
     return os.path.join(base, "closed-meets", datetime.now().strftime("%Y%m%d-%H%M%S"))
 
 
-@app.route('/api/meet/close', methods=['POST'])
-def api_meet_close():
-    """Close out the meet: archive results + state, then clear every race
-    pane and read, the live read log and the reader's dedup memory. The
-    meet folder and athlete list stay loaded - Load a new folder (or
-    re-open the picker) to set up the next meet."""
+def _results_folder_close():
+    """(results folder, RFID folder) when Close meet archives into the
+    FinishLynx results folder (2026-10-05), else None: preview, no folder
+    set, no RFID folder in it yet, or a whole drive (never swept)."""
+    if _application is None or not getattr(_application, "hardware_allowed", False) \
+            or not hasattr(_application, "lif_dirs"):
+        return None
+    root, rfid = _application.lif_dirs()
+    if not root or not os.path.isdir(root) or not os.path.isdir(rfid):
+        return None
+    root = os.path.abspath(root)
+    if os.path.dirname(root) == root:
+        return None
+    return root, rfid
+
+
+def _meet_folder_name() -> tuple:
+    """(folder name, meet name): '<date> <meet name>' of the open meet,
+    else today's date + 'Meet'."""
+    from .meet_folder import folder_name
+    svc = getattr(_application, 'meet_service', None) if _application is not None else None
+    meet = getattr(svc, 'meet', None)
+    if meet is not None:
+        return folder_name(meet.meet.date or datetime.now().strftime("%Y-%m-%d"), meet.meet.name), meet.meet.name
+    return folder_name(datetime.now().strftime("%Y-%m-%d"), "Meet"), "Meet"
+
+
+def _close_middleware(archive_dir: str) -> dict:
+    """Archive meet.json + results CSV + race state into archive_dir, then
+    clear every pane and read, the live read log and dedup memory, and
+    detach the meet. Raises OSError before anything is cleared."""
     mgr = _race_manager()
-    if not mgr:
-        return jsonify({"success": False, "error": "race manager not enabled"}), 400
-    archive_dir = _meet_archive_dir(mgr)
-    try:
-        summary = mgr.close_meet(archive_dir)
-    except OSError as e:
-        logger.exception("Meet close aborted: archive failed")
-        return jsonify({"success": False, "error": f"archive failed, nothing cleared: {e}"}), 500
+    # Meet mode (2026-10-03): meet/<id>/ (meet.json + pulls) goes into the
+    # archive BEFORE anything is cleared; a failed copy aborts the close.
+    svc = getattr(_application, 'meet_service', None) if _application is not None else None
+    meet_copy = svc.archive_to(archive_dir) if svc is not None else None
+    summary = mgr.close_meet(archive_dir)
     if _application:
         try:
             _application.clear_reads()
         except Exception:
             logger.exception("clear_reads during meet close failed")
+    reset_validation_state()
+    if meet_copy:
+        summary["archived"].append(meet_copy)
+        summary["meet_archived"] = meet_copy
+        try:
+            svc.detach()
+        except Exception:
+            logger.exception("Meet detach after close failed")
+    return summary
+
+
+@app.route('/api/meet/close/plan')
+def api_meet_close_plan():
+    """What Close meet will do, for its dialog: the meet folder it makes
+    in the results folder (or the one an unfinished close left), what gets
+    copied there, and whether FinishLynx is still open."""
+    svc = getattr(_application, 'meet_service', None)
+    if svc is not None and getattr(svc, 'file_only', False) and svc.meet is not None:
+        return jsonify({"file_only": True, "folder": svc.archived_folder(svc.meet.meet.id)})
+    target = _results_folder_close()
+    if not target:
+        return jsonify({"folder": None})
+    from . import fl_window, meet_folder
+    root, rfid = target
+    try:
+        pend = meet_folder.pending(root)
+        p = meet_folder.plan(root, rfid)
+    except OSError as e:
+        return jsonify({"folder": None, "error": str(e)})
+    svc = getattr(_application, 'meet_service', None)
+    meet_id = svc.meet.meet.id if svc is not None and getattr(svc, 'meet', None) is not None else None
+    again = None if pend else _reclose_folder(svc, meet_id, root)
+    p.update(root=root, rfid=rfid, resume=bool(pend), again=bool(again),
+             folder=pend or again or os.path.join(root, _meet_folder_name()[0]),
+             finishlynx_running=fl_window.running())
+    return jsonify(p)
+
+
+@app.route('/api/meet/close', methods=['POST'])
+def api_meet_close():
+    """Close out the meet. With a FinishLynx results folder (2026-10-05):
+    make '<date> <meet name>' in it, archive meet.json/results/race state
+    into its Middleware folder, clear the console, then copy FinishLynx's
+    files and the RFID folder in, check every copy and only then delete
+    the originals (meet_folder.py). A close that failed part way is
+    finished by calling this again. Without one (preview, no folder):
+    archive to closed-meets/<date-time> as before."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"success": False, "error": "race manager not enabled"}), 400
+    svc = getattr(_application, 'meet_service', None)
+    if svc is not None and getattr(svc, 'file_only', False) and svc.meet is not None:
+        return _close_file_only(svc)
+    target = _results_folder_close()
+    if target:
+        return _close_into_results_folder(*target)
+    archive_dir = _meet_archive_dir(mgr)
+    try:
+        summary = _close_middleware(archive_dir)
+    except OSError as e:
+        logger.exception("Meet close aborted: archive failed")
+        return jsonify({"success": False, "error": f"archive failed, nothing cleared: {e}"}), 500
     # The merged .lif files MeetPro reads go too (copies kept in the
     # archive), so the next meet's events never pick up this meet's rows.
     summary["lif_wiped"] = 0
@@ -4135,7 +4488,6 @@ def api_meet_close():
             summary["lif_wiped"] = len(_application.wipe_merged_lifs(archive_dir))
         except OSError:
             logger.exception("Could not clear the RFID .lif folder")
-    reset_validation_state()
     summary["success"] = True
     summary["archive_dir"] = archive_dir if summary["archived"] else None
     summary["message"] = (f"Meet closed: {summary['races']} race(s), {summary['reads']} read(s) cleared"
@@ -4147,12 +4499,307 @@ def api_meet_close():
     return jsonify(summary)
 
 
+def _close_file_only(svc):
+    """Save & close for a meet opened without FinishLynx (2026-10-05): its
+    meet file goes back into its meet folder; race panes, reads, the race
+    state saved there and the results folder are not touched."""
+    from .meet_service import MeetError
+    name = svc.meet.meet.name or svc.meet.meet.id
+    try:
+        folder = svc.save_back()
+        svc.detach()
+    except MeetError as e:
+        return jsonify({"success": False, "error": f"{e}; the meet is still open, nothing else changed"}), e.status
+    msg = (f"{name}: meet file saved back into {folder}; nothing else changed" if folder
+           else f"{name} closed (saved in this console; its meet folder is not there)")
+    logger.info(msg)
+    return jsonify({"success": True, "file_only": True, "message": msg, "archive_dir": folder,
+                    "races": 0, "reads": 0, "archived": []})
+
+
+def _close_into_results_folder(root: str, rfid: str):
+    from . import fl_window, meet_folder
+    if fl_window.running():
+        return jsonify({"success": False, "error": "FinishLynx is still open. Close FinishLynx, "
+                        "then Close meet again - nothing was changed."}), 409
+    svc = getattr(_application, 'meet_service', None)
+    meet_id = svc.meet.meet.id if svc is not None and svc.meet is not None else None
+    try:
+        folder = meet_folder.pending(root)
+        if folder is None:
+            folder = _reclose_folder(svc, meet_id, root)
+            if folder is not None:
+                marker = meet_folder.read_marker(folder)
+                marker["state"] = "middleware"
+                meet_folder.write_marker(folder, marker)
+            else:
+                name, meet_name = _meet_folder_name()
+                folder = meet_folder.create(root, name, meet_name)
+    except OSError as e:
+        logger.exception("Meet close aborted: could not make the meet folder")
+        return jsonify({"success": False, "error": f"could not make the meet folder, nothing cleared: {e}"}), 500
+    marker = meet_folder.read_marker(folder) or {}
+    summary = {"races": 0, "reads": 0, "archived": [], "resumed": marker.get("state") != "middleware"}
+    if marker.get("state") == "middleware":
+        try:
+            summary = _close_middleware(os.path.join(folder, "Middleware"))
+        except OSError as e:
+            logger.exception("Meet close aborted: archive failed")
+            return jsonify({"success": False, "error": f"archive failed, nothing cleared: {e}"}), 500
+        summary["resumed"] = False
+        # A retry must never close the next meet into this folder.
+        marker["state"] = "copying"
+        meet_folder.write_marker(folder, marker)
+        if meet_id:
+            try:
+                svc.note_archive(meet_id, folder)
+            except OSError:
+                logger.exception("Could not note where the meet was closed to")
+    summary["archive_dir"] = folder
+    try:
+        moved = meet_folder.copy_then_clear(root, rfid, folder)
+    except (meet_folder.CloseError, OSError) as e:
+        logger.exception(f"Meet close: moving files into {folder} did not finish")
+        summary.update(success=False, cleared=True, error=(
+            f"The race panes and reads are closed and archived in {os.path.join(folder, 'Middleware')}, "
+            f"but moving the results folder did not finish: {e}.\n\nNo original was deleted unless its copy "
+            f"was checked. Fix the problem, then click Close meet again to finish."))
+        return jsonify(summary), 500
+    summary["success"] = True
+    summary["files_moved"] = moved["files"]
+    summary["message"] = (("Finished the earlier close: " if summary["resumed"] else
+                           f"Meet closed: {summary['races']} race(s), {summary['reads']} read(s) cleared; ")
+                          + f"{moved['files']} file(s) copied, checked and cleared from the results folder "
+                          f"into {folder}")
+    logger.info(summary["message"])
+    return jsonify(summary)
+
+
+def _reclose_folder(svc, meet_id, root):
+    """The meet folder a reopened meet came from (2026-10-05): closing it
+    again saves there, not into a new "(2)" folder."""
+    from . import meet_folder
+    folder = svc.archived_folder(meet_id) if meet_id else None
+    if folder and os.path.isdir(folder) and os.path.normcase(os.path.dirname(os.path.abspath(folder))) \
+            == os.path.normcase(root):
+        m = meet_folder.read_marker(folder)
+        if m and m.get("state") == "done":
+            return folder
+    return None
+
+
+def find_meet_folder(path: str):
+    """The closed-meet folder holding `path` (the folder itself, or a file
+    anywhere inside it, e.g. Middleware/meet/meet.json), else None."""
+    from . import meet_folder
+    p = os.path.abspath(path or "")
+    for _ in range(4):
+        if os.path.isdir(p) and meet_folder.is_meet_folder(p):
+            return p
+        p = os.path.dirname(p)
+    return None
+
+
+LOOSE_LISTED = 12
+
+
+def _loose_text(loose: list) -> str:
+    names = [rel for _, rel in loose]
+    more = len(names) - LOOSE_LISTED
+    return ", ".join(names[:LOOSE_LISTED]) + (f" and {more} more" if more > 0 else "")
+
+
+def reopen_plan(folder: str) -> dict:
+    """What opening a closed meet with FinishLynx would need (2026-10-05),
+    for the Open dialog's choice: everything that would stop it, including
+    every file already in the results / RFID folders (nothing is ever
+    copied over them). The meet-file-only open needs only an empty console."""
+    from . import fl_window, meet_folder
+    mgr = _race_manager()
+    loaded = bool(mgr is not None and (mgr.races or mgr.reads))
+    target = _results_folder_close()
+    marker = meet_folder.read_marker(folder) or {}
+    files = 0
+    try:
+        files = sum(1 for n in os.listdir(folder)
+                    if not meet_folder.is_marker(n) and os.path.isfile(os.path.join(folder, n)))
+        sub = os.path.join(folder, "RFID")
+        if os.path.isdir(sub):
+            files += sum(1 for n in os.listdir(sub) if os.path.isfile(os.path.join(sub, n)))
+    except OSError:
+        pass
+    plan = {"folder": folder, "files": files, "loaded": loaded,
+            "finishlynx_running": fl_window.running(), "unfinished": marker.get("state") != "done",
+            "results_folder": target[0] if target else None, "loose": []}
+    if target:
+        plan["loose"] = [rel for _, rel in meet_folder.sources(*target)]
+    why = []
+    if plan["unfinished"]:
+        why.append("closing it did not finish: Close meet first")
+    if loaded:
+        why.append("race panes or reads are loaded: close the current meet first")
+    if not target:
+        why.append("no FinishLynx results folder is set (or this is a preview copy)")
+    elif plan["loose"]:
+        why.append(f"the results folder already has {len(plan['loose'])} file(s), which must not be "
+                   "overwritten: close that meet first, or move them")
+    if plan["finishlynx_running"]:
+        why.append("FinishLynx is open: close it first")
+    plan["finishlynx_ok"] = not why
+    plan["finishlynx_why"] = why
+    plan["file_only_ok"] = not loaded and not plan["unfinished"]
+    return plan
+
+
+def reopen_closed_meet(folder: str, file_only: bool = False) -> dict:
+    """Reopen a closed meet from its meet folder (2026-10-05): its FinishLynx
+    files and RFID folder are copied back into the results folder, its race
+    state (panes, reads, places) is loaded and the meet is opened, so a
+    missed result can be fixed in FinishLynx and the console as during the
+    meet. Close meet then saves back into the same folder. Raises MeetError
+    with nothing changed.
+
+    file_only (user's ask, 2026-10-05): open only its meet file - nothing
+    copied into the results folder, no race state, no start lists or panes
+    (MeetService.file_only) - to print, re-send or edit names and bibs.
+    Save & close writes the meet file back into the meet folder."""
+    from . import fl_window, meet_folder
+    from .meet_service import MeetError
+    if file_only:
+        marker = meet_folder.read_marker(folder)
+        if not marker:
+            raise MeetError(f"{folder} is not a closed meet folder", 404)
+        if marker.get("state") != "done":
+            raise MeetError("closing that meet did not finish: click Close meet to finish it first", 409)
+        mgr = _race_manager()
+        if mgr is not None and (mgr.races or mgr.reads):
+            raise MeetError("race panes or reads are loaded: close the current meet first", 409)
+        meet_dir = os.path.join(folder, "Middleware", "meet")
+        if not os.path.isfile(os.path.join(meet_dir, "meet.json")):
+            raise MeetError(f"no meet file in {meet_dir}", 404)
+        svc = getattr(_application, 'meet_service', None)
+        meet = svc.reopen_from(meet_dir, folder, file_only=True)
+        logger.info(f"Opened {folder} without FinishLynx (meet file only)")
+        return {"meet": meet, "folder": folder, "files": 0, "races": 0, "reads": 0, "file_only": True}
+    target = _results_folder_close()
+    if not target:
+        raise MeetError("set the FinishLynx results folder first (not in preview): reopening "
+                        "copies the meet's files back into it", 409)
+    root, rfid = target
+    marker = meet_folder.read_marker(folder)
+    if not marker:
+        raise MeetError(f"{folder} is not a closed meet folder", 404)
+    if marker.get("state") != "done":
+        raise MeetError("closing that meet did not finish: click Close meet to finish it first", 409)
+    if fl_window.running():
+        raise MeetError("FinishLynx is still open: close it, then open the meet again", 409)
+    mgr = _race_manager()
+    if mgr is None:
+        raise MeetError("race manager not enabled", 400)
+    if mgr.races or mgr.reads:
+        raise MeetError("race panes or reads are loaded: close the current meet first", 409)
+    loose = meet_folder.sources(root, rfid)
+    if loose:
+        raise MeetError(f"the results folder already has {len(loose)} file(s), which would be mixed "
+                        f"with this meet's: {_loose_text(loose)}. Close the current meet first, or "
+                        "move them", 409)
+    middleware = os.path.join(folder, "Middleware")
+    meet_dir = os.path.join(middleware, "meet")
+    state = os.path.join(middleware, "races-state.json")
+    if not os.path.isfile(os.path.join(meet_dir, "meet.json")):
+        raise MeetError(f"no meet file in {meet_dir}", 404)
+    try:
+        restored = meet_folder.restore_files(folder, root, rfid)
+    except meet_folder.CloseError as e:
+        raise MeetError(f"could not copy the meet's files back, nothing changed: {e}", 500) from None
+    try:
+        summary = mgr.restore_state(state) if os.path.isfile(state) else {"races": 0, "reads": 0}
+    except ValueError as e:
+        for p in restored:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        raise MeetError(f"could not load the race state, nothing changed: {e}", 500) from None
+    svc = getattr(_application, 'meet_service', None)
+    meet = svc.reopen_from(meet_dir, folder)
+    logger.info(f"Reopened {folder}: {len(restored)} file(s) back, "
+                f"{summary['races']} race(s), {summary['reads']} read(s)")
+    return {"meet": meet, "folder": folder, "files": len(restored), **summary}
+
+
 @app.route('/api/races/<int:key>/status', methods=['POST'])
 def api_races_status(key):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    mgr.set_status(key, request.get_json(force=True)["status"])
+    try:
+        mgr.set_status(key, request.get_json(force=True)["status"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route('/api/races/<int:key>/checkin', methods=['POST'])
+def api_races_checkin(key):
+    """Open or close a race's check-in (2026-10-04). Body: {"open": true,
+    "reader": "CHUTE", "close_in_min": 10, "take": false} or {"open": false}.
+    409 when the reader is checking in another race (send take=true to move it)."""
+    from .races import CheckinBusy
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    d = request.get_json(force=True) or {}
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    if not d.get("open"):
+        mgr.close_checkin(key)
+        return jsonify({"ok": True})
+    try:
+        close_in = d.get("close_in_min")
+        close_in = float(close_in) if close_in not in (None, "") else None
+        if close_in is not None and not 0 < close_in <= 600:
+            raise ValueError("close in must be 1-600 minutes")
+        reader = mgr.open_checkin(key, d.get("reader"), close_in, take=bool(d.get("take")))
+    except CheckinBusy as e:
+        return jsonify({"error": str(e), "busy": {"reader": e.reader, "race": e.race_key,
+                                                  "name": e.race_name}}), 409
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "reader": reader})
+
+
+@app.route('/api/races/<int:key>/checkin-settings', methods=['POST'])
+def api_races_checkin_settings(key):
+    """A race's own check-in reader ("" = meet default) and schedule:
+    {"reader": "CHUTE", "auto": null | "off" | {"open_before": 30, "close_before": 5}}
+    (auto null = follow the meet default; close_before null = at the gun)."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    d = request.get_json(force=True) or {}
+    try:
+        mgr.set_checkin_settings(key, d.get("reader"), d["auto"] if "auto" in d else "keep")
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route('/api/races/checkin-default', methods=['POST'])
+def api_races_checkin_default():
+    """Meet-wide check-in: {"reader": "CHUTE", "schedule": null |
+    {"open_before": 30, "close_before": 5}} - every race with a start time
+    follows it unless it has its own."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    d = request.get_json(force=True) or {}
+    try:
+        mgr.set_checkin_default(d.get("reader"), d["schedule"] if "schedule" in d else "keep")
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True})
 
 
@@ -4331,6 +4978,85 @@ def api_races_save_lif(key):
     return jsonify(dict(out, ok=True))
 
 
+def _uploaded_lif_text() -> tuple:
+    """(text, file name) of the multipart 'file' field: a .lif from the
+    operator's file picker, FinishLynx's ANSI (cp1252) or UTF-8 with a BOM."""
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        raise ValueError("no file chosen (multipart field 'file')")
+    raw = f.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise ValueError("that file is too big for a .lif")
+    text = raw[3:].decode("utf-8", "replace") if raw.startswith(b"\xef\xbb\xbf") \
+        else raw.decode("cp1252", "replace")
+    return text, f.filename
+
+
+@app.route('/api/races/<int:key>/import_lif', methods=['POST'])
+def api_races_import_lif(key):
+    """"Select .lif file" (2026-10-09): the picked file's results are the
+    truth for this pane (RaceManager.import_lif)."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    try:
+        text, name = _uploaded_lif_text()
+        summary = mgr.import_lif(key, text, name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    logger.info(f"Race {key}: results from picked .lif {summary['name']} "
+                f"({summary['timed']} timed, {summary['flagged']} DNF/DQ, "
+                f"{len(summary['moved'])} moved)")
+    if _application is not None and hasattr(_application, "refresh_merged_lifs"):
+        _application.refresh_merged_lifs([key])
+    return jsonify({"ok": True, "lif": summary})
+
+
+@app.route('/api/races/<int:key>/clear_lif', methods=['POST'])
+def api_races_clear_lif(key):
+    """Stop using the picked .lif: back to the reads and FinishLynx's file."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    cleared = mgr.clear_lif(key)
+    if cleared:
+        logger.info(f"Race {key}: picked .lif cleared")
+        if _application is not None and hasattr(_application, "refresh_merged_lifs"):
+            _application.refresh_merged_lifs([key])
+    return jsonify({"ok": True, "cleared": cleared})
+
+
+@app.route('/api/races/<int:key>/crossings', methods=['POST'])
+def api_races_crossings(key):
+    """Reads before / Reads after per station for one race (2026-10-09).
+    Body: {"crossings": {station: {"before": n, "after": m}}} - every
+    station listed is set (0 / 0 = the default: one read, nothing else
+    expected). Reads already heard are renumbered."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    d = request.get_json(force=True) or {}
+    items = d.get("crossings")
+    if not isinstance(items, dict) or not items:
+        return jsonify({"error": "crossings: {station: {before, after}} expected"}), 400
+    out = {}
+    try:
+        for station, c in items.items():
+            c = c if isinstance(c, dict) else {}
+            out = mgr.set_crossings(key, station, c.get("before", 0), c.get("after", 0))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if _application is not None and hasattr(_application, "refresh_merged_lifs"):
+        _application.refresh_merged_lifs([key])
+    return jsonify({"ok": True, "crossings": out})
+
+
 @app.route('/api/races/<int:key>/lif')
 def api_races_lif(key):
     """The pane's .lif as a download (the console's "Save as..."): the
@@ -4421,19 +5147,135 @@ def api_reads_assign(read_id):
 
 @app.route('/api/reads/<int:read_id>/override', methods=['POST'])
 def api_reads_override(read_id):
+    """Edit a read's time. Body: {"clock": "17:30:59.7"} or {"elapsed":
+    "26:33.36"} (a value with no hours part is a race time, from the gun of
+    the read's race); empty restores the raw read. The value is the time
+    the console shows: a finish-mat read's film offset is added back so the
+    pane shows what was typed. A clock time without a date keeps the read's
+    own day (2026-10-09: it went on today's date, so editing yesterday's
+    race gave a time a day long)."""
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True)
-    if d.get("clock"):
-        try:
-            ts = _parse_clock(d["clock"])
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-    else:
-        ts = None  # clear the override, restore the raw read
-    mgr.override_time(read_id, ts, d.get("note", ""))
+    read = mgr.reads.get(read_id)
+    if read is None:
+        return jsonify({"error": f"no read {read_id}"}), 404
+    d = request.get_json(force=True) or {}
+    clock = str(d.get("clock", "") or "").strip()
+    elapsed = str(d.get("elapsed", "") or "").strip()
+    if not elapsed and clock and clock.count(":") < 2:
+        elapsed, clock = clock, ""
+    if not (clock or elapsed):
+        mgr.override_time(read_id, None, d.get("note", ""))   # restore the raw read
+        return jsonify({"ok": True})
+    key = read.race if read.race is not None else read.crossing_race
+    race = mgr.races.get(key) if key is not None else None
+    try:
+        if elapsed:
+            if race is None or race.gun is None:
+                return jsonify({"error": "this read has no race with a gun - enter a clock time instead"}), 400
+            shown = race.gun + timedelta(seconds=_parse_elapsed(elapsed))
+        else:
+            shown = _parse_clock(clock)
+            if "T" not in clock and " " not in clock.strip():
+                shown = datetime.combine(read.ts.date(), shown.time())
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    corr = mgr.film_correction(read, key) if (mgr.is_finish_read(read) and not read.manual) else 0.0
+    mgr.override_time(read_id, shown + timedelta(seconds=corr), d.get("note", ""))
     return jsonify({"ok": True})
+
+
+@app.route('/api/races/<int:key>/finish_time', methods=['POST'])
+def api_races_finish_time(key):
+    """Edit a runner's finish time (the Results page, 2026-10-09). Body:
+    {"bib", "time"}: a race time ("26:33.36", from the gun) or a clock
+    time (the race's own day). Wins over a picked .lif."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    race = mgr.races[key]
+    d = request.get_json(force=True) or {}
+    bib = str(d.get("bib", "")).strip()
+    value = str(d.get("time", "") or "").strip()
+    if not bib or not value:
+        return jsonify({"error": "bib and time are required"}), 400
+    if race.gun is None:
+        return jsonify({"error": "this race has no gun"}), 400
+    try:
+        if value.count(":") < 2:
+            shown = race.gun + timedelta(seconds=_parse_elapsed(value))
+        else:
+            shown = _parse_clock(value)
+            if "T" not in value and " " not in value:
+                shown = datetime.combine(race.gun.date(), shown.time())
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if shown <= race.gun:
+        return jsonify({"error": "that is not after the gun"}), 400
+    out = mgr.set_finish_time(key, bib, shown)
+    return jsonify({"ok": True, **out})
+
+
+@app.route('/api/races/<int:key>/revert_finish', methods=['POST'])
+def api_races_revert_finish(key):
+    """The pane's "M": a finish set by hand goes back to the read time
+    (body {"bib"})."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    bib = str((request.get_json(force=True) or {}).get("bib", "")).strip()
+    try:
+        out = mgr.revert_finish(key, bib)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, **out})
+
+
+@app.route('/api/races/<int:key>/athlete/<bib>/reads')
+def api_races_athlete_reads(key, bib):
+    """Every read of one runner in one race, counted or not (the runner dialog)."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    return jsonify({"reads": mgr.athlete_reads(key, str(bib))})
+
+
+@app.route('/api/reads/<int:read_id>/use', methods=['POST'])
+def api_reads_use(read_id):
+    """"Use this read": it counts at its point in the race (body {"race"}),
+    every other reader crossing there is ignored."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    d = request.get_json(force=True) or {}
+    try:
+        key = int(d.get("race"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "race missing"}), 400
+    if read_id not in mgr.reads or key not in mgr.races:
+        return jsonify({"error": "no such read or race"}), 404
+    out = mgr.use_read(read_id, key)
+    note = None
+    if _application is not None and hasattr(_application, "send_restored_read"):
+        try:
+            note = _application.send_restored_read(read_id)
+        except Exception:
+            logger.exception("Sending a used read to FinishLynx failed")
+    return jsonify({"ok": True, **out, "finishlynx": note})
+
+
+# Meet management routes (docs/MEET-API.md), registered last so they see
+# everything above (2026-10-03). The station package has no meet_api.
+if importlib.util.find_spec(f"{__package__}.meet_api"):
+    from .meet_api import bp as _meet_bp  # noqa: E402
+    app.register_blueprint(_meet_bp)
 
 
 def run_web_server(host: str = '0.0.0.0', port: int = 8080):

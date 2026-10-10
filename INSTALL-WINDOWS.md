@@ -14,6 +14,9 @@ bundled. It installs to `C:\rfid_finishlynx` and sets up:
 - Python 3.12 (skipped if already installed)
 - all Python dependencies (offline, from `wheels\`)
 - both LED-clock USB-serial drivers (CH340 + PL2303)
+- meet sharing with your other PCs: a folder in **Google Drive for
+  desktop** (`My Drive\RFID meets`, asked when Drive is installed; or later
+  in the console, Meet > Info > Sharing)
 - an **"RFID Console"** shortcut on the Desktop (starts the middleware
   server) and the same shortcut in Startup (auto-starts at logon)
 - then launches the console and opens the web page

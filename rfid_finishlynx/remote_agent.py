@@ -12,6 +12,7 @@ from .remote_protocol import (
     MessageType,
     format_ack,
     format_announce,
+    format_pong,
     parse_management_message,
 )
 from .transport import LoRaTransport, parse_any_lora_message
@@ -53,6 +54,8 @@ class RemoteAgent:
         if self._running:
             return
         self._running = True
+        # PING/PONG stamps in the clock this station's reads are sent in
+        self._transport.clock = self._clock
         self._announce_thread = threading.Thread(
             target=self._announce_loop, daemon=True
         )
@@ -73,6 +76,7 @@ class RemoteAgent:
         Dispatches READ messages (ignored on remote side) and management
         messages to appropriate handlers.
         """
+        arrived = self._clock()
         msg = parse_any_lora_message(data)
         if msg is None:
             return
@@ -89,6 +93,12 @@ class RemoteAgent:
                 return
             if msg.reader_id != self._app.config.lora.reader_id:
                 return  # Not for us
+            if msg.msg_type == MessageType.PING:
+                # Clock check: t3 is stamped as the reply leaves (transport)
+                self._transport.send(format_pong(
+                    msg.reader_id, msg.seq, msg.fields["t1"], arrived,
+                    air=float(getattr(self._app.config.lora, "air_latency_sec", 0.0) or 0.0)))
+                return
             if msg.msg_type == MessageType.ACK:
                 # Host acknowledging one of our READ transmissions
                 sender = getattr(self._app, "read_sender", None)
@@ -96,6 +106,10 @@ class RemoteAgent:
                     sender.handle_ack(msg.seq)
                 return
             self._handle_management(msg)
+
+    def _clock(self) -> float:
+        """This station's corrected clock: the one its reads are sent in."""
+        return time.time() - getattr(self._app, "remote_clock_offset", 0.0)
 
     def _announce_loop(self):
         """Periodically send ANNOUNCE heartbeats."""
@@ -306,6 +320,7 @@ class RemoteAgent:
                 "port": config.lora.port,
                 "baud": config.lora.baud,
                 "reader_id": config.lora.reader_id,
+                "air_latency_sec": config.lora.air_latency_sec,
             }
         elif section == "logging":
             return {
@@ -353,6 +368,14 @@ class RemoteAgent:
                     config.lora.baud = int(values["baud"])
                 if "reader_id" in values:
                     config.lora.reader_id = values["reader_id"]
+                if "air_latency_sec" in values:
+                    air = float(values["air_latency_sec"])
+                    if not 0.0 <= air <= 5.0:
+                        return False
+                    config.lora.air_latency_sec = air
+                    # offsets measured with the old value: learn afresh
+                    # from the next GUN (2026-10-04, clock check Apply)
+                    self._app._remote_clock_samples = []
 
             elif section == "logging":
                 if "level" in values:

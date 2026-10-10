@@ -37,7 +37,7 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NEVER_REPLACE = ("config.yaml", "races-state.json", "support.key",
+NEVER_REPLACE = ("config.yaml", "races-state.json", "support.key", "EDITION.json",
                  "deploy/start-console.bat", "deploy/boot_guard.py")
 KEEP_BACKUPS = 3
 USER_AGENT = "rfid-finishlynx-updater"
@@ -198,16 +198,42 @@ def apply(zip_bytes: bytes, root: str = ROOT, python: str = sys.executable, run_
     with open(os.path.join(backup, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump({"from": old.get("commit"), "to": new.get("commit"), "at": datetime.now().isoformat(),
                    "replaced": replaced, "added": added}, f, indent=1)
-    for rel, dest, data in writes:
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as f:
-            f.write(data)
-    with open(os.path.join(root, "update-pending.json"), "w", encoding="utf-8") as f:
-        json.dump({"backup": backup, "to": new.get("commit"), "from": old.get("commit"), "launches": 0}, f)
+    # ...and so is the pending marker, as "applying": an update cut off
+    # while files change is rolled back by the boot guard at the next
+    # launch instead of running mixed versions (2026-10-04 review).
+    pending = os.path.join(root, "update-pending.json")
+    marker = {"backup": backup, "to": new.get("commit"), "from": old.get("commit"),
+              "launches": 0, "state": "applying"}
+    _write_json(pending, marker)
+    try:
+        for rel, dest, data in writes:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            tmp = dest + ".update-tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, dest)
+    except Exception as e:
+        logger.exception("Update failed while installing files - rolling back")
+        try:
+            _guard(root).rollback(backup, root)
+        except Exception:
+            logger.exception("Rollback after the failed update failed; the boot guard tries again")
+        raise UpdateError(f"the update failed while installing ({e}); the old version was put back")
+    marker["state"] = "applied"
+    _write_json(pending, marker)
     _prune(root)
     logger.info(f"Update {old.get('commit')} -> {new.get('commit')}: {len(replaced)} file(s) replaced, "
                 f"{len(added)} added, backup {backup}")
     return {"from": old, "to": new, "replaced": len(replaced), "added": len(added), "backup": backup}
+
+
+def _write_json(path: str, obj: dict):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def _prune(root: str):
@@ -241,6 +267,11 @@ def confirm(root: str = ROOT) -> bool:
             p = json.load(f)
     except (OSError, ValueError):
         p = {}
+    if p.get("state") == "applying":
+        # cut off mid-install: running is not proof the files are whole
+        logger.error(f"Update to {p.get('to')} never finished installing: not confirming it; "
+                     f"the boot guard rolls it back")
+        return False
     os.remove(pending)
     logger.info(f"Update to {p.get('to')} confirmed: the console is running on it")
     return True

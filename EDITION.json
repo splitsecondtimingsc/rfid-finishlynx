@@ -1,0 +1,11 @@
+{
+ "label": "public",
+ "meet_sync": {
+  "mode": "folder",
+  "folder": "google-drive"
+ },
+ "sync_targets": [
+  "folder"
+ ],
+ "edition": "public"
+}

@@ -77,6 +77,46 @@ class TestCheckInStartList(unittest.TestCase):
         self.assertEqual(finish_of(mgr, key, "3")["lif_why"], "off_list")
 
 
+def _held(mgr, bib, point):
+    """Put the bib's read at `point` into Held, as if the panes had kept it out."""
+    read = next(r for r in mgr.reads.values() if r.bib == bib and r.point == point)
+    read.state, read.race, read.reason = "held", None, "no open race"
+    return read.id
+
+
+class TestAssignedFromHeld(unittest.TestCase):
+    """User's rule 2026-10-03: a finish the operator moves from Held into a
+    race goes into the .lif at once - no separate "Save to .lif"."""
+
+    def setUp(self):
+        self.mgr, self.key = race_with_splits()
+        self.mgr.set_entries(self.key, ["1", "2"])              # 3 is off the list
+
+    def test_hand_placed_finish_goes_into_the_lif(self):
+        self.assertNotIn("3", lif_rows(self.mgr, self.key))
+        self.mgr.assign_read(_held(self.mgr, "3", "FINISH"), self.key)
+        self.assertIn("3", self.mgr.races[self.key].chip_to_lif)
+        self.assertEqual(lif_rows(self.mgr, self.key)["3"][6], "18:45.000")
+        self.assertEqual(finish_of(self.mgr, self.key, "3")["lif_why"], "")
+
+    def test_hand_placed_split_does_not(self):
+        self.mgr.assign_read(_held(self.mgr, "3", "S1"), self.key)
+        self.assertNotIn("3", self.mgr.races[self.key].chip_to_lif)
+        self.assertNotIn("3", lif_rows(self.mgr, self.key))
+
+    def test_mat_placed_finish_still_waits(self):
+        self.mgr.ingest("9", GUN + timedelta(seconds=1200), "FINISH")
+        self.assertNotIn("9", self.mgr.races[self.key].chip_to_lif)
+        self.assertNotIn("9", lif_rows(self.mgr, self.key))
+
+    def test_finishlynx_timed_row_still_wins(self):
+        self.mgr.assign_read(_held(self.mgr, "3", "FINISH"), self.key)
+        fl = ("2,1,1,Girls 5K,,,,,,5000,09:00:00.000\r\n"
+              "1,3,,Cole,Cy,Red,18:44.900,,18:44.900,,,09:00:00.000,F,,,,,,18:44.900\r\n")
+        self.mgr._fl_decided[self.key] = {"3"}
+        self.assertEqual(lif_rows(self.mgr, self.key, fl)["3"][6], "18:44.900")
+
+
 class TestEvtParsing(unittest.TestCase):
 
     def test_evt_race_list_carries_entry_bibs(self):

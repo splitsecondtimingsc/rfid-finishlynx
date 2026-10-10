@@ -1,0 +1,32 @@
+                    rfid-meet  10/10/2026 12:05 PM
+Test Invitational - 10/10/2026 / Hosted by Ridge High School / Team Bib Sheet
+
+Hillcrest (HIL)
+======================================================================
+  Bib Name                     Sex Yr Race
+  301 Garth, Finley            F   11 Girls 5k Run CC Varsity
+  302 Keane, Jules             F   10 Girls 5k Run CC Varsity
+2 athletes
+Ridge High School (RID)
+======================================================================
+  Bib Name                     Sex Yr Race
+  101 Birch, Avery             F   12 Girls 5k Run CC Varsity
+  102 Dunmore, Casey           F   10 Girls 5k Run CC Varsity
+  103 Fontaine-Whitlock-Aberna F   12 Girls 5k Run CC Varsity
+  104 Ives, Harper             F   10 Girls 5k Run CC Varsity (EX)
+  105 Lark, Kai                F   SR Girls 5k Run CC Varsity
+5 athletes
+Valley Christian Academy Lakes (VCA)
+======================================================================
+  Bib Name                     Sex Yr Race
+  201 Núñez, Zoë               F   11 Girls 5k Run CC Varsity
+  202 Ellery, Dana             F    9 Girls 5k Run CC Varsity
+  203 Hollis, Gray             F   12 Girls 5k Run CC Varsity
+  204 Jarvis, Indy             F   11 Girls 5k Run CC Varsity
+  205 Nash, Morgan             F    9 Girls 5k Run CC Varsity (scr)
+5 athletes
+Unattached
+======================================================================
+  Bib Name                     Sex Yr Race
+  900 Moss, Lee                F   11 Girls 5k Run CC Varsity
+1 athlete

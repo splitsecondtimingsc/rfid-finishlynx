@@ -88,7 +88,7 @@ class TestRunningTimeArmsPane(unittest.TestCase):
         k1 = a.race_manager.create_race("Boys 5K", event=1)
         k2 = a.race_manager.create_race("Girls 5K", event=2)
         a.race_manager.set_status(k1, "checkin")
-        a.race_manager.set_status(k2, "checkin")
+        a.race_manager.open_checkin(k2, reader="CHUTE2")   # one race per reader (2026-10-04)
         a._handle_running_time(3.2)
         r1, r2 = a.race_manager.races[k1], a.race_manager.races[k2]
         self.assertIsNotNone(r1.gun)

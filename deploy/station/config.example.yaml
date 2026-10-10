@@ -1,0 +1,26 @@
+# Station config: copied to config.yaml on first install. The finish console
+# can change the reader settings over the radio (Remote stations > Reader...).
+mode: remote_lap
+lora:
+  enabled: true
+  port: 192.168.0.61:8886   # ethernet gateway host:port, or /dev/ttyUSB0
+  reader_id: S1             # S1, S2... (point_labels at the finish), CHUTE for check-in
+  announce_interval_sec: 10.0
+reader:
+  type: vanch
+  host: 192.168.0.51
+  port: 502
+  antennas: all
+  power_dbm: 30.0
+  beep: false
+led_clock:
+  enabled: true
+  port: auto
+  type: auto
+  clocks: []
+  hour_format: '12'
+timing:
+  dedup_window_sec: 12.0
+logging:
+  file: rfid_timing.log
+  level: INFO

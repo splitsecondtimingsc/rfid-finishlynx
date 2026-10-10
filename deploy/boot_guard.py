@@ -96,6 +96,11 @@ def guard(root=ROOT):
     except (OSError, ValueError):
         os.remove(pending)
         return
+    if p.get("state") == "applying" and p.get("backup") and os.path.isdir(p["backup"]):
+        # the updater stopped while replacing files (2026-10-04 review)
+        log(f"Update to {p.get('to')} was cut off while installing - rolling back", root)
+        rollback(p["backup"], root)
+        return
     p["launches"] = int(p.get("launches", 0)) + 1
     if p["launches"] > MAX_LAUNCHES and p.get("backup") and os.path.isdir(p["backup"]):
         log(f"Update to {p.get('to')} did not start after {MAX_LAUNCHES} tries - rolling back", root)

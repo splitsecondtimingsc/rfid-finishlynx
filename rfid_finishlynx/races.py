@@ -18,7 +18,8 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .film_offset import FilmOffset
 from .lif_generator import _format_race_time
-from .lif_merge import ENCODING as LIF_ENCODING, fl_bib_status, fl_timed, looks_complete, merge_lif
+from .lif_merge import (ENCODING as LIF_ENCODING, fl_bib_status, fl_timed, lif_header,
+                        lif_truth_rows, looks_complete, merge_lif)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,24 @@ FMT = "%Y-%m-%dT%H:%M:%S.%f"
 
 def _ts(dt: datetime) -> str:
     return dt.strftime(FMT)
+
+
+def _schedule(d) -> dict:
+    """A check-in schedule {"open_before": min, "close_before": min|None}
+    (minutes before the start time; close_before None = at the gun)."""
+    def minutes(v):
+        if v is None or v == "":
+            return None
+        m = float(v)
+        if not 0 <= m <= 600:
+            raise ValueError("minutes before the start must be 0-600")
+        return int(m) if m == int(m) else m
+    o, c = minutes((d or {}).get("open_before")), minutes((d or {}).get("close_before"))
+    if o is None:
+        raise ValueError("open_before is required")
+    if c is not None and c >= o:
+        raise ValueError("check-in must close after it opens")
+    return {"open_before": o, "close_before": c}
 
 
 def _parse_ts(s: str) -> datetime:
@@ -81,6 +100,19 @@ class Read:
     # The race this read was in when its reader was set to Not in use, so
     # switching the reader back on returns it there instead of to Held.
     off_race: Optional[int] = None
+    # One read per station per race (2026-10-09, after Jim Crawford: a
+    # runner walking back over the finish mat replaced her finish). A read
+    # after the one that counts at its station is ignored but kept in the
+    # pass numbering: "repeat" (same crossing, read again), "after" (a
+    # later crossing the race's Reads after allows for), "unexpected"
+    # (more crossings than that - flagged in the pane) or "checked" (an
+    # unexpected one the operator ignored by hand). crossing_race: the
+    # race it was numbered in (an ignored read has no race).
+    extra: str = ""
+    crossing_race: Optional[int] = None
+    # Placed by hand after being skipped/extra: the operator's call, out of
+    # the pass numbering for good.
+    pinned: bool = False
 
     @property
     def eff_ts(self) -> datetime:
@@ -113,13 +145,54 @@ class Race:
     # bibs whose chip finish the operator put into the .lif although
     # FinishLynx lists them untimed ("Save to .lif" - never automatic)
     chip_to_lif: Set[str] = field(default_factory=set)
+    # bibs taken out with "Remove from race": FinishLynx's own row for them
+    # is left out too, so they leave the pane and the merged .lif (2026-10-08:
+    # FinishLynx's rows came back after every Remove). Placing them back by
+    # hand (assign, move, manual read) clears it.
+    removed: Set[str] = field(default_factory=set)
+    # A .lif the operator picked with "Select .lif file" (2026-10-09, Jim
+    # Crawford: a runner walking back over the mat replaced her finish and
+    # FinishLynx's corrected file could not override it). Its timed rows are
+    # the truth: they replace the reader's finish for those bibs, and its
+    # DNF/DQ rows take the finish away. Everyone else still finishes from
+    # the reads. It stands in for FinishLynx's own file until cleared.
+    lif_truth: str = ""
+    lif_truth_name: str = ""
+    lif_truth_at: str = ""
+    # Crossings per station (2026-10-09): station id -> {"before": n,
+    # "after": m}. Each station counts ONE read per athlete in this race:
+    # the first `before` crossings are skipped (a loop course crossing the
+    # mat early), the next counts, `after` later crossings are expected and
+    # ignored quietly; any more are ignored and flagged. Absent = 0 / 0.
+    crossings: Dict[str, Dict[str, int]] = field(default_factory=dict)
     # the event's entries from MeetPro's .evt (with check-ins: the start list)
     entries: Set[str] = field(default_factory=set)
+    # Check-in (2026-10-04). checkin_reader: the reader this race checks in
+    # on ("" = the meet-wide default). checkin_closes: when the open
+    # check-in closes by itself ("Close in", iso). checkin_auto: None =
+    # follow the meet-wide schedule, {"off": True} = none, or
+    # {"open_before": min|None, "close_before": min|None} before the start
+    # time (close_before None = at the gun). checkin_auto_done: check-in
+    # was opened once (by the schedule or by hand), so the schedule never
+    # reopens what the operator closed.
+    checkin_reader: str = ""
+    checkin_closes: Optional[str] = None
+    checkin_auto: Optional[dict] = None
+    checkin_auto_done: bool = False
+    checkin_waiting: str = ""     # why a scheduled open has not happened (not saved)
 
     def start_list(self) -> Set[str]:
         """Who is expected in this race: .evt entries + check-ins. Empty =
         no start list (chip times flow to the .lif as before)."""
         return set(self.entries) | set(self.checkins)
+
+
+class CheckinBusy(Exception):
+    """The reader is already checking in another race."""
+
+    def __init__(self, reader: str, race_key: int, race_name: str):
+        super().__init__(f"{reader} is checking in {race_name}")
+        self.reader, self.race_key, self.race_name = reader, race_key, race_name
 
 
 class RaceManager:
@@ -164,8 +237,21 @@ class RaceManager:
         self.races: Dict[int, Race] = {}
         self.order: List[int] = []
         self.reads: Dict[int, Read] = {}
-        self.chute_target: Optional[int] = None
-        self.chute_last: Optional[int] = None      # the race check-in was last open for (late check-ins)
+        # Open check-ins: reader -> race. "CHUTE" (chute_reader) stands for
+        # the chute: the reader of that name or any whose Location is
+        # Check-in; any other id is that reader alone. checkin_last keeps
+        # the race each reader checked in last, for runners who reach it
+        # just after the gun - dropped when check-in is closed by hand or
+        # by its timer, kept when the gun closes it.
+        self.checkin_open: Dict[str, int] = {}
+        self.checkin_last: Dict[str, int] = {}
+        # Meet-wide check-in: the reader, and the schedule every race with a
+        # start time follows unless it has its own (open_before None = no
+        # schedule). Kept across close_meet.
+        self.checkin_default: dict = {"reader": chute_reader, "open_before": None, "close_before": None}
+        # race -> its scheduled start (datetime) or None; set by the app
+        # from the meet (meet.json start times)
+        self.start_time_of: Optional[Callable] = None
         self._lif_foreign: Dict[str, bool] = {}   # .lif paths FinishLynx has taken over
         self._written: Dict[str, str] = {}        # merged .lif path -> content last written
         self._fl_cache: Dict[str, str] = {}       # FinishLynx .lif path -> last complete text
@@ -201,15 +287,171 @@ class RaceManager:
         return key
 
     def set_status(self, key: int, status: str):
+        if status == "checkin":
+            # older callers: open on the race's reader, taking it over
+            self.open_checkin(key, take=True)
+            return
         with self._lock:
             race = self.races[key]
+            if status == "pending":
+                self._close_checkin_locked(race, grace=False)
+            else:
+                self._release_reader_locked(key)
             race.status = status
-            if status == "checkin":
-                self.chute_target = key
-                self.chute_last = key
-            elif self.chute_target == key and status != "checkin":
-                self.chute_target = None
         self._changed([key])
+
+    # ------------------------------------------------------------- check-in
+
+    @property
+    def chute_target(self) -> Optional[int]:
+        """The race checking in on the chute (older callers)."""
+        return self.checkin_open.get(self.chute_reader)
+
+    def checkin_reader_of(self, race: Race) -> str:
+        return race.checkin_reader or self.checkin_default.get("reader") or self.chute_reader
+
+    def open_checkin(self, key: int, reader: Optional[str] = None,
+                     close_in_min: Optional[float] = None, take: bool = False,
+                     now: Optional[datetime] = None) -> str:
+        """Open check-in for a race on `reader` (default: its own / the meet's).
+        Raises CheckinBusy if another race holds that reader, unless take=True
+        (that race's check-in closes). Returns the reader used."""
+        now = now or datetime.now()
+        with self._lock:
+            race = self.races[key]
+            if race.status not in ("pending", "checkin"):
+                raise ValueError(f"{race.name} has started: check-in is over")
+            reader = (reader or "").strip() or self.checkin_reader_of(race)
+            other = self.checkin_open.get(reader)
+            if other is not None and other != key:
+                if not take:
+                    raise CheckinBusy(reader, other, self.races[other].name)
+                self._close_checkin_locked(self.races[other], grace=False)
+            self._release_reader_locked(key)
+            self.checkin_open[reader] = key
+            self.checkin_last[reader] = key
+            race.status = "checkin"
+            race.checkin_auto_done = True
+            race.checkin_waiting = ""
+            race.checkin_closes = (_ts(now + timedelta(minutes=float(close_in_min)))
+                                   if close_in_min else None)
+            touched = [key] + ([other] if other is not None and other != key else [])
+        logger.info(f"Check-in open: {race.name} on {reader}"
+                    + (f", closes in {close_in_min:g} min" if close_in_min else ""))
+        self._changed(touched)
+        return reader
+
+    def close_checkin(self, key: int, why: str = "by hand"):
+        """Close a race's check-in: nothing more joins it (no late grace)."""
+        with self._lock:
+            race = self.races[key]
+            was = race.status == "checkin"
+            self._close_checkin_locked(race, grace=False)
+        if was:
+            logger.info(f"Check-in closed ({why}): {race.name}, {len(race.checkins)} checked in")
+        self._changed([key])
+
+    def _release_reader_locked(self, key: int):
+        for reader in [r for r, k in self.checkin_open.items() if k == key]:
+            del self.checkin_open[reader]
+        self.races[key].checkin_closes = None
+
+    def _close_checkin_locked(self, race: Race, grace: bool):
+        self._release_reader_locked(race.key)
+        if not grace:
+            for reader in [r for r, k in self.checkin_last.items() if k == race.key]:
+                del self.checkin_last[reader]
+        if race.status == "checkin":
+            race.status = "pending"
+
+    def set_checkin_settings(self, key: int, reader: Optional[str] = None, auto="keep"):
+        """A race's own check-in reader ("" = meet default) and schedule
+        (None = meet default, "off", or {"open_before", "close_before"})."""
+        with self._lock:
+            race = self.races[key]
+            if reader is not None:
+                race.checkin_reader = str(reader).strip()
+            if auto != "keep":
+                race.checkin_auto = ({"off": True} if auto == "off" else
+                                     None if auto is None else _schedule(auto))
+                race.checkin_auto_done = race.status != "pending"
+                race.checkin_waiting = ""
+        self._changed([key])
+
+    def set_checkin_default(self, reader: Optional[str] = None, schedule="keep"):
+        """The meet-wide check-in reader and schedule (None = no schedule)."""
+        with self._lock:
+            if reader is not None:
+                self.checkin_default["reader"] = str(reader).strip() or self.chute_reader
+            if schedule != "keep":
+                sch = _schedule(schedule) if schedule else {"open_before": None, "close_before": None}
+                self.checkin_default.update(sch)
+                for race in self.races.values():
+                    if race.checkin_auto is None and race.status == "pending":
+                        race.checkin_auto_done = False
+                        race.checkin_waiting = ""
+        self._changed([])
+
+    def checkin_schedule_of(self, race: Race) -> Optional[dict]:
+        """The schedule this race follows: its own, else the meet-wide one."""
+        auto = race.checkin_auto
+        if auto is None:
+            auto = self.checkin_default
+        if auto.get("off") or auto.get("open_before") is None:
+            return None
+        return {"open_before": auto["open_before"], "close_before": auto.get("close_before")}
+
+    def _start_of(self, race: Race) -> Optional[datetime]:
+        if not self.start_time_of:
+            return None
+        try:
+            return self.start_time_of(race)
+        except Exception:
+            logger.exception("start time lookup failed")
+            return None
+
+    def tick_checkins(self, now: Optional[datetime] = None) -> List[int]:
+        """Close check-ins whose timer or schedule says so, open scheduled
+        ones. The app calls this every few seconds. Returns races changed."""
+        now = now or datetime.now()
+        changed, notes = [], []
+        with self._lock:
+            for race in [self.races[k] for k in self.order if k in self.races]:
+                start = self._start_of(race)
+                sch = self.checkin_schedule_of(race) if start else None
+                if race.status == "checkin":
+                    closes = [_parse_ts(race.checkin_closes)] if race.checkin_closes else []
+                    if sch and sch["close_before"] is not None:
+                        closes.append(start - timedelta(minutes=sch["close_before"]))
+                    if closes and now >= min(closes):
+                        self._close_checkin_locked(race, grace=False)
+                        changed.append(race.key)
+                        notes.append(f"Check-in closed (timer): {race.name}, {len(race.checkins)} checked in")
+                elif race.status == "pending" and sch and not race.checkin_auto_done:
+                    opens = start - timedelta(minutes=sch["open_before"])
+                    ends = start - timedelta(minutes=sch["close_before"] or 0)
+                    if not opens <= now < ends:
+                        continue
+                    reader = self.checkin_reader_of(race)
+                    other = self.checkin_open.get(reader)
+                    if other is not None:
+                        why = f"waiting for {reader}: {self.races[other].name} is checking in"
+                        if race.checkin_waiting != why:
+                            race.checkin_waiting = why
+                            changed.append(race.key)
+                        continue
+                    self.checkin_open[reader] = race.key
+                    self.checkin_last[reader] = race.key
+                    race.status = "checkin"
+                    race.checkin_auto_done = True
+                    race.checkin_waiting = ""
+                    changed.append(race.key)
+                    notes.append(f"Check-in open (schedule): {race.name} on {reader}")
+        for n in notes:
+            logger.info(n)
+        if changed:
+            self._changed(changed)
+        return changed
 
     @staticmethod
     def _near(candidates, ts: datetime, tol: float = 2.0) -> bool:
@@ -225,8 +467,7 @@ class RaceManager:
                 race.gun_candidates.append({"ts": _ts(ts), "source": source})
             if race.status in ("pending", "checkin"):
                 race.status = "racing"
-                if self.chute_target == key:
-                    self.chute_target = None
+                self._release_reader_locked(key)     # late grace stays
         self._changed([key])
 
     def add_gun_candidate(self, key: int, ts: datetime, source: str, arm: bool = True):
@@ -248,8 +489,7 @@ class RaceManager:
                 race.gun_source = source
                 if race.status in ("pending", "checkin"):
                     race.status = "racing"
-                    if self.chute_target == key:
-                        self.chute_target = None
+                    self._release_reader_locked(key)     # late grace stays
         self._changed([key])
 
     def delete_race(self, key: int) -> int:
@@ -271,8 +511,9 @@ class RaceManager:
             self.film.forget_race(key)
             for d in (self._fl_untimed, self._fl_decided, self._fl_timed, self._fl_seen):
                 d.pop(key, None)
-            if self.chute_target == key:
-                self.chute_target = None
+            for m in (self.checkin_open, self.checkin_last):
+                for reader in [r for r, k in m.items() if k == key]:
+                    del m[reader]
         self._changed([])
         return released
 
@@ -303,8 +544,8 @@ class RaceManager:
             self.races.clear()
             self.order = []
             self.reads.clear()
-            self.chute_target = None
-            self.chute_last = None
+            self.checkin_open.clear()
+            self.checkin_last.clear()
             self._fl_untimed.clear()
             self._fl_decided.clear()
             self._fl_timed.clear()
@@ -336,8 +577,12 @@ class RaceManager:
         "finish_offset"} - the last is the film offset the caller must
         subtract when sending a finish to FinishLynx."""
         with self._lock:
+            key = self._checkin_race_for(reader_id, ts)
+            if key is not None:
+                return self._ingest_chute(bib, ts, key)
             if self.is_chute(reader_id):
-                return self._ingest_chute(bib, ts)
+                return {"state": "ignored", "race": None,
+                        "reason": "chute read with no check-in open"}
 
             # A reader in reader_points counts as the point(s) configured
             # for it - a split station can be the finish line, the finish
@@ -364,12 +609,14 @@ class RaceManager:
                 # Which split this pass is depends on the athlete's earlier
                 # passes at the same reader (inside the race's window).
                 self._relabel_passes(bib, read.reader, race.key if race else None)
-            elif self.reader_points:
-                # A read elsewhere (e.g. Mile 1) can prove that a crossing
-                # skipped as "not a split" was the real one after all.
+            else:
+                # Its own station counts one read per race (a walk back over
+                # the mat is not a second finish), and a read elsewhere (e.g.
+                # Mile 1) can prove that a crossing skipped as "not a split"
+                # was the real one after all.
                 self._relabel_bib(bib, race.key if race else None)
-            if read.skipped:
-                pass                      # a "not a split" pass: ignored, keeps its reason
+            if read.skipped or read.extra:
+                pass                      # not the crossing that counts: ignored, keeps its reason
             elif race is not None:
                 early = self._too_early(read, race)
                 if early:
@@ -377,9 +624,8 @@ class RaceManager:
                     read.race = None
                     read.reason = early
                     read.early = True
-                    if read.reader:
-                        # not a pass after all: the others renumber
-                        self._relabel_passes(bib, read.reader, race.key)
+                    # not a pass after all: the others renumber
+                    self._relabel_passes(bib, self.station_of(read), race.key)
                 else:
                     self._assign(read, race.key)
             else:
@@ -390,12 +636,15 @@ class RaceManager:
                 # the film offset in force right now; remember how much.
                 # Decided on the point the read counts as, so a station
                 # standing in for the finish line is corrected too.
-                read.sent_offset = self.film.correction(read.antenna, read.race)
+                read.sent_offset = self.film_correction(read, read.race)
             changed = [read.race] if read.race else []
         self._changed(changed)
         return {"state": read.state, "race": read.race, "reason": read.reason,
                 "point": read.point, "finish_offset": read.sent_offset,
-                "read_id": read.id, "early": read.early}
+                "read_id": read.id, "early": read.early,
+                # not the crossing that counts at its station: kept out of
+                # FinishLynx (2026-10-09) - "skip" / "repeat" / "after" / "unexpected"
+                "crossing": "skip" if read.skipped else read.extra}
 
     # ------------------------------------------------ LapTime feed bookkeeping
 
@@ -548,8 +797,10 @@ class RaceManager:
     def set_chip_to_lif(self, race_key: int, bib: str, on: bool = True) -> bool:
         """The pane's "Save to .lif": put `bib`'s chip finish into the .lif
         MeetPro reads although FinishLynx lists them untimed (on=False takes
-        it back out). Never automatic - a stray read at the finish mat must
-        not become a result by itself. Returns the new state."""
+        it back out). Never automatic for a read the mat placed - a stray
+        read at the finish must not become a result by itself; a finish
+        the operator assigns from Held is set here by assign_read. Returns
+        the new state."""
         with self._lock:
             race = self.races[race_key]
             if on:
@@ -568,6 +819,13 @@ class RaceManager:
         if pts:
             return any(p in self.finish_readers for p in pts)      # [off] -> False
         return reader_id in self.finish_readers
+
+    def film_correction(self, read: Read, race_key: Optional[int]) -> float:
+        """The film offset for this finish read in `race_key`: the rolling
+        mean of the evaluated finishes around its own race time."""
+        race = self.races.get(race_key) if race_key is not None else None
+        at = (read.eff_ts - race.gun).total_seconds() if race and race.gun else None
+        return self.film.correction(read.antenna, race_key, at)
 
     def is_finish_read(self, read: Read) -> bool:
         """A read the finish-line camera also saw: its point is a finish,
@@ -631,8 +889,7 @@ class RaceManager:
                 read.early = True
                 continue
             self._assign(read, race.key)
-            if read.reader:
-                self._relabel_passes(read.bib, read.reader, race.key)
+            self._relabel_passes(read.bib, self.station_of(read), race.key)
             changed.add(race.key)
         return changed
 
@@ -701,6 +958,7 @@ class RaceManager:
                 return
             touched: Set[int] = set()
             groups = set()
+            unmapped = set()          # (bib, race) whose reader went back to its own id
             back_in: List[Read] = []      # finish reads returned to a race: promote after relabel
             for r in self.reads.values():
                 if r.manual:
@@ -735,25 +993,42 @@ class RaceManager:
                             r.state = "held"
                             r.reason = f"{src} was not in use when heard"
                         r.off_race = None
+                    numbered_in = r.race if r.race is not None else r.crossing_race
                     if src in clean:
                         r.reader = src
-                        groups.add((r.bib, src, r.race))
+                        groups.add((r.bib, src, numbered_in))
                     else:
                         r.reader = ""
                         r.point = src
                         if r.skipped:
                             r.skipped = False
+                            r.crossing_race = None
                             r.state = "held"
                             r.reason = f"{src} no longer pass-numbered; was skipped"
+                        elif numbered_in is not None:
+                            unmapped.add((r.bib, numbered_in))
                     if r.race:
                         touched.add(r.race)
             for bib, reader, race_key in groups:
                 self._relabel_passes(bib, reader, race_key)
+            for bib, race_key in unmapped:
+                self._relabel_bib(bib, race_key)
             # a finish that is back also promotes its athlete's held splits
             for r in back_in:
                 if r.state == "assigned" and r.race is not None and r.point in self.finish_readers:
                     self._assign(r, r.race)
         self._changed(sorted(touched))
+
+    def station_of(self, read: Read) -> str:
+        """The station (reader) whose crossings a read is numbered among:
+        its reader when that hands out points, else its point (an unmapped
+        reader's id is its point)."""
+        return read.reader or read.point
+
+    def crossings_of(self, race: Optional[Race], station: str) -> Tuple[int, int]:
+        """(Reads before, Reads after) for `station` in `race`; 0 / 0 by default."""
+        c = (race.crossings.get(station) if race is not None else None) or {}
+        return int(c.get("before") or 0), int(c.get("after") or 0)
 
     def _relabel_passes(self, bib: str, reader: str, race_key: Optional[int]):
         """Recompute the point of every read of `bib` heard by `reader`
@@ -761,17 +1036,27 @@ class RaceManager:
 
         Passes are clusters of reads closer together than pass_window_sec
         (a lingering runner is one pass). The i-th pass gets the i-th point
-        configured for the reader; passes beyond the list keep the last
-        point (a duplicate, visible in the athlete dialog like any other).
-        A pass whose point is SKIP ("-") is not a split: its reads are
-        ignored (restorable) but still count, so the next crossing gets
-        the right number. Reads the operator ignored by hand drop out of
-        the numbering.
+        configured for the reader (a reader not in reader_points: its own
+        id, one point). A pass whose point is SKIP ("-") is not a split: its
+        reads are ignored (restorable) but still count, so the next crossing
+        gets the right number. The race's Reads before for the station puts
+        that many SKIPs in front. Reads the operator ignored or placed by
+        hand drop out of the numbering.
+
+        One read per station per race (2026-10-09, user's rule after Jim
+        Crawford, where a runner walking back over the finish mat 13 minutes
+        later replaced her finish): inside a race, only the first read of a
+        counted pass counts; a repeat in the same pass and every pass after
+        the station's points are ignored (restorable, kept out of
+        FinishLynx). Up to Reads after of those later passes are expected;
+        more are flagged "unexpected" for the operator to check. Before:
+        a later pass kept the last point and the last finish read won.
 
         The window is the race's reads (plus held reads since its gun,
         which a finish read would promote). Without a race - unknown bib,
         held - it is every held read since the earliest open gun, so a
-        spectator's pre-race loiter does not count as Mile 1.
+        spectator's pre-race loiter does not count as Mile 1; a reader not
+        in reader_points numbers nothing there.
 
         Order check: the "not a split" crossing of a mat happens before the
         athlete reaches the previous split point on the course (a loop that
@@ -780,10 +1065,14 @@ class RaceManager:
         one - the skip slots are used up and it counts as the real split,
         even if the reader missed the early crossing.
         """
-        points = self.reader_points.get(reader)
-        if not points or points == [self.OFF]:
+        mapped = self.reader_points.get(reader)
+        if mapped == [self.OFF] or mapped == [self.chute_reader]:
             return
         race = self.races.get(race_key) if race_key is not None else None
+        if not mapped and race is None:
+            return
+        before, after = self.crossings_of(race, reader)
+        points = [self.SKIP] * before + (list(mapped) if mapped else [reader])
         if race is not None:
             since = race.gun
         else:
@@ -794,14 +1083,17 @@ class RaceManager:
         def in_window(r):
             if race is not None:
                 return (r.race == race.key
-                        or (r.race is None and (since is None or r.eff_ts >= since)))
+                        or (r.race is None and r.crossing_race in (None, race.key)
+                            and (since is None or r.eff_ts >= since)))
             return r.race is None and (since is None or r.eff_ts >= since)
 
         group = []
         for r in self.reads.values():
-            if r.bib != bib or r.reader != reader:
+            if r.bib != bib or r.manual or r.pinned:
                 continue
-            if r.state == "ignored" and not r.skipped:
+            if (r.reader != reader) if mapped else (r.reader or r.point != reader):
+                continue
+            if r.state == "ignored" and not r.skipped and not r.extra:
                 continue
             # A too-early read is noise, not a pass - unless this reader's
             # first slot is "not a split", where an early crossing is exactly
@@ -818,41 +1110,88 @@ class RaceManager:
             prev_pt = self._prev_point(real[-1], race)
             if prev_pt:
                 anchor_ts = [r.eff_ts for r in self.reads.values()
-                             if r.bib == bib and r.point == prev_pt and r.reader != reader
+                             if r.bib == bib and r.point == prev_pt and self.station_of(r) != reader
                              and r.state != "ignored" and not r.skipped and in_window(r)]
                 anchor = min(anchor_ts) if anchor_ts else None
 
+        label = self._label(real[-1]) if real else reader
+        # Points the operator settled by hand in this race ("Use this read",
+        # a typed time): the reader's crossings for them stay ignored
+        # ("replaced"), whatever their number.
+        covered = set()
+        if race is not None:
+            covered = {x.point for x in self.reads.values()
+                       if x.bib == bib and x.race == race.key and x.state == "assigned"
+                       and (x.pinned or (x.manual and not x.estimated))}
         idx = -1
         prev = None
         for r in group:
-            if prev is None or (r.eff_ts - prev).total_seconds() > self.pass_window_sec:
+            first_read = prev is None or (r.eff_ts - prev).total_seconds() > self.pass_window_sec
+            if first_read:
                 idx += 1
             prev = r.eff_ts
             if anchor is not None and r.eff_ts > anchor:
                 while idx < len(points) - 1 and points[idx] == self.SKIP:
                     idx += 1
+            if race is not None and idx >= len(points):
+                n = idx - len(points) + 1          # crossings past the one that counts
+                r.point = real[-1] if real else reader
+                kind = "after" if n <= after else "unexpected"
+                if r.point in covered:
+                    kind = "replaced"
+                elif kind == "unexpected" and r.extra == "checked":
+                    kind = "checked"               # the operator has looked at it
+                why = {"after": " (Reads after)", "checked": " (checked)", "replaced": " (set by hand)",
+                       "unexpected": " - more than this race expects, check"}[kind]
+                self._make_extra(r, race, kind,
+                                 f"crossing {idx + 1} at {label}: after the one that counts{why}")
+                continue
             point = points[min(idx, len(points) - 1)]
             if point == self.SKIP:
                 r.point = reader
+                r.extra = ""
+                r.crossing_race = race.key if race is not None else None
                 if not r.skipped:
                     r.skipped = True
                     r.state = "ignored"
                     r.race = None
                     r.reason = f"pass {idx + 1} at {reader} is not a split (loop course)"
-            else:
-                r.point = point
-                if r.skipped:             # numbering shifted: this pass counts now
-                    r.skipped = False
-                    r.reason = ""
-                    if race is not None:
-                        r.state = "assigned"
-                        r.race = race.key
-                    else:
-                        r.state = "held"
+                continue
+            r.point = point
+            if race is not None and point in covered:
+                self._make_extra(r, race, "replaced",
+                                 f"crossing {idx + 1} at {label}: not used, {self._label(point)} was set by hand")
+                continue
+            if race is not None and not first_read:
+                self._make_extra(r, race, "repeat",
+                                 f"read again in the same crossing at {label}: the first read counts")
+                continue
+            if r.skipped or r.extra:      # numbering shifted: this pass counts now
+                r.skipped = False
+                r.extra = ""
+                r.crossing_race = None
+                r.reason = ""
+                if race is not None:
+                    r.state = "assigned"
+                    r.race = race.key
+                else:
+                    r.state = "held"
+
+    def _make_extra(self, r: Read, race: Race, kind: str, reason: str):
+        """Ignore `r` as a read after the one that counts at its station."""
+        r.skipped = False
+        r.extra = kind
+        r.crossing_race = race.key
+        r.state = "ignored"
+        r.race = None
+        r.reason = reason
 
     def _relabel_bib(self, bib: str, race_key: Optional[int]):
-        for reader in self.reader_points:
-            self._relabel_passes(bib, reader, race_key)
+        stations = set(self.reader_points)
+        stations.update(r.point for r in self.reads.values()
+                        if r.bib == bib and not r.reader and not r.manual)
+        for station in sorted(stations):
+            self._relabel_passes(bib, station, race_key)
 
     def _prev_point(self, point: str, race: Race) -> Optional[str]:
         """The timing point just before `point` in course order, or None."""
@@ -870,15 +1209,24 @@ class RaceManager:
         whose Location (Stations panel) is Check-in ({id: [CHUTE]})."""
         return reader_id == self.chute_reader or self.reader_points.get(reader_id) == [self.chute_reader]
 
-    def _ingest_chute(self, bib: str, ts: datetime) -> dict:
-        key = self.chute_target
-        if key is None or self.races[key].status not in ("checkin", "pending"):
-            late = self.races.get(self.chute_last) if self.chute_last is not None else None
-            if not (late is not None and late.status == "racing" and late.gun is not None
+    def _checkin_race_for(self, reader_id: str, ts: datetime) -> Optional[int]:
+        """The race a read on this reader checks into, or None: an open
+        check-in on this reader (or on the chute, for a chute reader), else
+        the race it last checked in if that one started under
+        LATE_CHECKIN_SEC ago with check-in still open at the gun."""
+        names = [reader_id] + ([self.chute_reader] if self.is_chute(reader_id)
+                               and reader_id != self.chute_reader else [])
+        for name in names:
+            if name in self.checkin_open:
+                return self.checkin_open[name]
+        for name in names:
+            late = self.races.get(self.checkin_last.get(name, -1))
+            if (late is not None and late.status == "racing" and late.gun is not None
                     and 0 <= (ts - late.gun).total_seconds() <= self.LATE_CHECKIN_SEC):
-                return {"state": "ignored", "race": None,
-                        "reason": "chute read with no check-in open"}
-            key = late.key
+                return late.key
+        return None
+
+    def _ingest_chute(self, bib: str, ts: datetime, key: int) -> dict:
         race = self.races[key]
         if bib not in race.roster:
             race.roster.add(bib)
@@ -959,19 +1307,27 @@ class RaceManager:
                     read.race = to_key
             self.races[from_key].roster.discard(bib)
             self.races[to_key].roster.add(bib)
+            self.races[to_key].removed.discard(bib)
         self._changed([from_key, to_key])
 
     def ignore_read(self, read_id: int, reason: str = "manually removed"):
         with self._lock:
             read = self.reads[read_id]
-            old = read.race
+            old = read.race if read.race is not None else read.crossing_race
             read.state = "ignored"
             read.race = None
             read.reason = reason
-            read.skipped = False          # by hand now: leaves the pass numbering
-            if read.reader:
-                # dropping a spurious first pass shifts the rest up
-                self._relabel_passes(read.bib, read.reader, old)
+            if read.skipped or read.extra:
+                # It never counted (a "not a split" crossing, or one after
+                # the crossing that counts): it keeps its place in the pass
+                # numbering, so nothing shifts; a flagged extra is checked.
+                if read.extra == "unexpected":
+                    read.extra = "checked"
+            else:
+                read.crossing_race = None
+                if not read.manual:
+                    # dropping a spurious first pass shifts the rest up
+                    self._relabel_passes(read.bib, self.station_of(read), old)
         self._changed([old] if old else [])
 
     def remove_bib(self, race_key: int, bib: str, reason: str = "manually removed") -> int:
@@ -986,12 +1342,21 @@ class RaceManager:
         with self._lock:
             n = 0
             for read in self.reads.values():
-                if read.state == "assigned" and read.race == race_key and read.bib == bib:
+                if read.bib != bib:
+                    continue
+                if (read.state == "assigned" and read.race == race_key) or (
+                        (read.skipped or read.extra) and read.crossing_race == race_key):
+                    # skipped/extra crossings too: left in the numbering, the
+                    # next one would become the finish again
                     read.state = "ignored"
                     read.race = None
                     read.reason = reason
+                    read.skipped = False
+                    read.extra = ""
+                    read.crossing_race = None
                     n += 1
             self.races[race_key].roster.discard(bib)
+            self.races[race_key].removed.add(bib)
         self._changed([race_key])
         return n
 
@@ -1002,17 +1367,37 @@ class RaceManager:
         saying the reader missed the earlier crossing: the read leaves the
         pass numbering and takes the reader's real split point (the last
         one in its list).
+
+        Placing a FINISH read by hand is the operator vouching for it, so
+        the chip time also goes into the .lif at once (user's rule
+        2026-10-03) - same as "Save to .lif" for an athlete FinishLynx
+        lists untimed or the start list does not name. FinishLynx's own
+        timed row still wins (merge_lif).
         """
         with self._lock:
             read = self.reads[read_id]
-            if read.skipped:
-                real = [p for p in self.reader_points.get(read.reader, []) if p != self.SKIP]
-                read.point = real[-1] if real else read.reader
-                read.reader = ""
+            if read.skipped or read.extra:
+                # skipped as "not a split", or a crossing after the one that
+                # counts: the operator says this one counts - out of the
+                # numbering for good (pinned)
+                if read.reader:
+                    real = [p for p in self.reader_points.get(read.reader, []) if p != self.SKIP]
+                    read.point = real[-1] if real else read.reader
+                    read.reader = ""
                 read.skipped = False
+                read.extra = ""
+                read.crossing_race = None
+                read.pinned = True
             self._assign(read, race_key)
-            if read.reader:
-                self._relabel_passes(read.bib, read.reader, race_key)
+            self.races[race_key].removed.discard(read.bib)
+            if not read.manual and not read.pinned:
+                self._relabel_passes(read.bib, self.station_of(read), race_key)
+            if read.state == "assigned" and read.race == race_key and self.is_finish_read(read):
+                race = self.races[race_key]
+                if read.bib not in race.chip_to_lif:
+                    race.chip_to_lif.add(read.bib)
+                    logger.info("Bib %s placed by hand in %r - chip finish saved to the .lif",
+                                read.bib, race.name)
         self._changed([race_key])
 
     def add_manual_read(self, race_key: int, bib: str, ts: datetime,
@@ -1025,8 +1410,148 @@ class RaceManager:
             self.reads[read.id] = read
             self._assign(read, race_key)
             self.races[race_key].roster.add(bib)
+            self.races[race_key].removed.discard(bib)
         self._changed([race_key])
         return read.id
+
+    def use_read(self, read_id: int, race_key: int) -> dict:
+        """"Use this read" (2026-10-09): the operator says this read is the
+        one that counts at its point in `race_key` - a crossing the
+        numbering skipped or ignored, a deleted read, a held one. It leaves
+        the pass numbering for good (pinned) and every other reader
+        crossing at that point is ignored as "replaced" until it is deleted.
+        A finish placed by hand goes into the .lif at once (as Assign does)."""
+        with self._lock:
+            read = self.reads[read_id]
+            race = self.races[race_key]
+            if read.reader:
+                real = [p for p in self.reader_points.get(read.reader, []) if p not in (self.SKIP, self.OFF)]
+                if read.point not in real:
+                    read.point = real[-1] if real else read.reader
+                read.reader = ""
+            read.skipped = False
+            read.extra = ""
+            read.crossing_race = None
+            read.early = False
+            read.pinned = not read.manual
+            self._assign(read, race_key)
+            race.removed.discard(read.bib)
+            self._relabel_bib(read.bib, race_key)
+            if self.is_finish_read(read) and read.bib not in race.chip_to_lif:
+                race.chip_to_lif.add(read.bib)
+            out = {"bib": read.bib, "point": read.point, "label": self._label(read.point)}
+        logger.info(f"Read {read_id}: bib {out['bib']} {out['label']} used by hand in {race.name!r}")
+        self._changed([race_key])
+        return out
+
+    def set_finish_time(self, race_key: int, bib: str, shown: datetime) -> dict:
+        """Edit a runner's finish time from the Results page (2026-10-09):
+        `shown` is the finish clock the results should show. The read that
+        counts is retimed (a reader finish gets its film offset added back,
+        so it shows what was typed); a runner with no finish read here - a
+        time from FinishLynx's .lif only - gets a typed finish. Either way
+        it is set by hand, so it wins over a picked .lif."""
+        with self._lock:
+            race = self.races[race_key]
+            fins = sorted((r for r in self.reads.values()
+                           if r.bib == bib and r.race == race_key and r.state == "assigned"
+                           and r.point in self.finish_readers), key=lambda r: (r.eff_ts, r.id))
+            if fins:
+                read = fins[-1]                     # the one results() uses
+                corr = 0.0 if read.manual else self.film_correction(read, race_key)
+                read.override_ts = shown + timedelta(seconds=corr)
+                if not read.manual:
+                    read.pinned = True              # by hand: wins over the .lif, out of the numbering
+                    self._relabel_bib(bib, race_key)
+                rid, how = read.id, "retimed"
+            else:
+                point = "FINISH" if "FINISH" in self.finish_readers else sorted(self.finish_readers)[0]
+                read = Read(id=next(self._next_read_id), bib=bib, ts=shown, point=point,
+                            manual=True, reason="finish time typed on the Results page")
+                self.reads[read.id] = read
+                self._assign(read, race_key)
+                race.roster.add(bib)
+                race.removed.discard(bib)
+                self._relabel_bib(bib, race_key)
+                rid, how = read.id, "typed"
+        logger.info(f"{race.name}: bib {bib} finish {how} by hand ({_ts(shown)})")
+        self._changed([race_key])
+        return {"read_id": rid, "how": how}
+
+    def revert_finish(self, race_key: int, bib: str) -> dict:
+        """The race pane's "M" (manual override, click to revert -
+        2026-10-10, user): the finish set by hand goes back to what the
+        reader recorded. An edited or hand-picked read loses its override
+        and its pin (the pass numbering picks the finish again, a picked
+        .lif applies again); a typed finish with no read behind it is
+        deleted (restorable from Ignored). ValueError when nothing was set
+        by hand."""
+        with self._lock:
+            race = self.races[race_key]
+            fins = sorted((r for r in self.reads.values()
+                           if r.bib == bib and r.race == race_key and r.state == "assigned"
+                           and r.point in self.finish_readers), key=lambda r: (r.eff_ts, r.id))
+            hand = [r for r in fins if r.manual or r.override_ts is not None or r.pinned]
+            if not hand:
+                raise ValueError(f"bib {bib} has no finish set by hand in {race.name}")
+            read = hand[-1]
+            if read.manual and read.override_ts is None:
+                read.state = "ignored"
+                read.race = None
+                read.reason = "typed finish reverted (M)"
+                how = "typed time removed"
+            elif read.manual:
+                read.override_ts = None            # a typed time, edited again: back to as typed
+                how = "back to the typed time"
+            else:
+                read.override_ts = None
+                read.pinned = False
+                how = "back to the read time"
+            self._relabel_bib(bib, race_key)
+        logger.info(f"{race.name}: bib {bib} finish reverted ({how})")
+        self._changed([race_key])
+        return {"how": how}
+
+    def athlete_reads(self, race_key: int, bib: str) -> List[dict]:
+        """Every read of `bib` that belongs to this race or could: the ones
+        that count, crossings the numbering skipped or ignored, reads the
+        operator deleted, held ones since the gun. For the runner dialog,
+        where any of them can be used, deleted or retimed."""
+        with self._lock:
+            race = self.races[race_key]
+            out = []
+            for r in sorted(self.reads.values(), key=lambda r: (r.eff_ts, r.id)):
+                if r.bib != bib:
+                    continue
+                mine = (r.race == race_key or r.crossing_race == race_key
+                        or (r.race is None and r.crossing_race is None and race.gun is not None
+                            and r.eff_ts >= race.gun and r.reason != self.OFF_REASON))
+                if not mine:
+                    continue
+                counts = r.state == "assigned" and r.race == race_key
+                fin = self.is_finish_read(r)
+                corr = self.film_correction(r, race_key) if (fin and not r.manual) else 0.0
+                elapsed = (r.eff_ts - race.gun).total_seconds() - corr if race.gun else None
+                if counts:
+                    kind = "counts"
+                elif r.skipped:
+                    kind = "skip"
+                elif r.extra:
+                    kind = r.extra
+                elif r.state == "held":
+                    kind = "early" if r.early else "held"
+                else:
+                    kind = "deleted"
+                out.append({
+                    "id": r.id, "point": r.point, "label": self._label(r.point),
+                    "station": "" if r.manual else self.station_of(r),
+                    "clock": _ts(r.eff_ts - timedelta(seconds=corr)), "elapsed": elapsed,
+                    "raw_clock": _ts(r.ts), "correction": corr,
+                    "kind": kind, "counts": counts, "reason": r.reason, "finish": fin,
+                    "manual": r.manual, "estimated": r.estimated, "pinned": r.pinned,
+                    "overridden": r.override_ts is not None,
+                })
+            return out
 
     # ------------------------------------------------------------- estimates
 
@@ -1213,7 +1738,10 @@ class RaceManager:
             read.override_ts = new_ts
             if note:
                 read.reason = note
-        self._changed([read.race] if read.race else [])
+            key = read.race if read.race is not None else read.crossing_race
+            if key is not None and not read.manual:
+                self._relabel_bib(read.bib, key)       # the crossings may be in a new order
+        self._changed([key] if key else [])
 
     def set_scoring(self, race_key: int, scorers: int, displacers: int,
                     gender: Optional[str] = None,
@@ -1290,7 +1818,7 @@ class RaceManager:
                 def elapsed(r):
                     return (r.eff_ts - race.gun).total_seconds() if race.gun else None
 
-                fin_corr = self.film.correction(finish.antenna, race_key) \
+                fin_corr = self.film_correction(finish, race_key) \
                     if (finish is not None and not finish.manual) else 0.0
                 fin_raw = elapsed(finish) if finish is not None else None
                 rows.append({
@@ -1325,18 +1853,59 @@ class RaceManager:
                         "manual": finish.manual,
                         "estimated": finish.estimated,
                         "overridden": finish.override_ts is not None,
+                        "pinned": finish.pinned,
                     },
                     "last_point": self.point_labels.get(reads[-1].point,
                                                         reads[-1].point),
                 })
 
+            # A .lif picked with "Select .lif file" is the truth (2026-10-09):
+            # its time replaces the reader's finish (a later walk back over
+            # the mat can't move the runner any more), its DNF/DQ rows take
+            # the finish away; bibs it doesn't time keep their reads.
+            by_row = {r["bib"]: r for r in rows}
+            fl_only = set()
+            truth_timed, truth_flagged = lif_truth_rows(race.lif_truth)
+            # ... except a finish the operator set by hand (a typed or edited
+            # time, Use this read): that wins over the file (user's choice
+            # 2026-10-09). A runner taken out with Remove stays out.
+            def by_hand(row):
+                f = row and row["finish"]
+                return bool(f and (f["manual"] or f["overridden"] or f.get("pinned")))
+
+            for bib in truth_flagged:
+                if bib in by_row and not by_hand(by_row[bib]):
+                    by_row[bib]["finish"] = None
+            for bib, fl in truth_timed.items():
+                if bib in race.removed or by_hand(by_row.get(bib)):
+                    continue
+                fin = {"clock": _ts(race.gun + timedelta(seconds=fl["time"])) if race.gun else "",
+                       "elapsed": fl["time"], "raw_elapsed": fl["time"], "corrected": False,
+                       "not_in_finishlynx": False, "fl_untimed": False, "lif_why": "",
+                       "chip_in_lif": False, "correction": 0.0, "antenna": 0, "read_id": None,
+                       "manual": False, "estimated": False, "overridden": False,
+                       "fl_only": bib not in by_row, "from_lif": True, "lif_place": fl["place"]}
+                row = by_row.get(bib)
+                if row is not None:
+                    row["finish"] = fin
+                    continue
+                fl_only.add(bib)
+                athlete = self.athlete_lookup(bib) or {}
+                row = {"bib": bib,
+                       "last_name": athlete.get("last_name") or fl["last_name"],
+                       "first_name": athlete.get("first_name") or fl["first_name"],
+                       "school": athlete.get("school") or fl["school"],
+                       "splits": [], "finish": fin, "last_point": "Finish"}
+                rows.append(row)
+                by_row[bib] = row
+
             # Athletes FinishLynx has timed but the finish mat never read
             # (no chip, a dead tag, the reader missed them): listed with
             # FinishLynx's time, flagged "FL only" (2026-10-01, user's ask).
             # Its own row already carries them into the merged .lif.
-            by_row = {r["bib"]: r for r in rows}
-            fl_only = set()
             for bib, fl in self._fl_timed.get(race_key, {}).items():
+                if bib in race.removed or bib in truth_timed or bib in truth_flagged:
+                    continue
                 row = by_row.get(bib)
                 if row is not None and row["finish"] is not None:
                     continue
@@ -1356,8 +1925,10 @@ class RaceManager:
                              "school": athlete.get("school") or fl["school"],
                              "splits": [], "finish": fin, "last_point": "Finish"})
 
+            # a tie in the picked .lif keeps its own order
             finishers = sorted((r for r in rows if r["finish"]),
-                               key=lambda r: r["finish"]["elapsed"])
+                               key=lambda r: (r["finish"]["elapsed"],
+                                              r["finish"].get("lif_place") or 10 ** 6))
             for place, row in enumerate(finishers, 1):
                 row["place"] = place
             on_course = sorted((r for r in rows if not r["finish"]),
@@ -1403,6 +1974,8 @@ class RaceManager:
                 "not_seen": not_seen,
                 "expected_points": expected,
                 "needs_review": needs_review,
+                # crossed a station more often than the race expects (flagged)
+                "extra_crossings": self.extra_crossings(race_key),
                 "teams": self._team_scores(finishers, race.scoring),
                 # this race's own film offset (a new race starts at zero)
                 "film": {"applied": self.film.correction(0, race_key),
@@ -1542,7 +2115,8 @@ class RaceManager:
                     if sl and r["bib"] not in sl} if sl else set()
             return merge_lif(race.event, race.round, race.heat, race.name, race.distance,
                              race.gun, res, columns, fl_text=fl_text, splits=splits,
-                             publish_chip=set(race.chip_to_lif), hold_chip=hold)
+                             publish_chip=set(race.chip_to_lif), hold_chip=hold,
+                             drop=set(race.removed))
 
     # FinishLynx files older than this before the gun belong to an earlier
     # race with the same event number (a previous meet left in the folder).
@@ -1550,9 +2124,12 @@ class RaceManager:
 
     def finishlynx_lif(self, race_key: int, lynx_dir: str) -> Optional[str]:
         """FinishLynx's own .lif for the pane, if it has written one for
-        THIS race; the last complete copy when it is caught mid-write."""
+        THIS race; the last complete copy when it is caught mid-write. A
+        .lif picked with "Select .lif file" stands in for it until cleared."""
         with self._lock:
             race = self.races[race_key]
+            if race.lif_truth:
+                return race.lif_truth
         if not lynx_dir:
             return None
         path = os.path.join(lynx_dir, self.lif_name(race))
@@ -1573,6 +2150,60 @@ class RaceManager:
             return text
         return self._fl_cache.get(path)
 
+    def import_lif(self, race_key: int, text: str, name: str = "") -> dict:
+        """"Select .lif file" (2026-10-09, user: "treated as truth, and
+        additional reads can be added to the pane if the race is open"):
+        the file's timed rows become the race's finishes, whatever the mat
+        read, its DNF/DQ rows take the finish away, and every other runner
+        keeps finishing from the reads. The file's own event number is not
+        checked: FinishLynx may number the event differently from the
+        console. ValueError when the file has no timed or flagged row.
+        Returns the summary: header, counts, and the finishers whose place
+        or time it changed."""
+        timed, flagged = lif_truth_rows(text)
+        if not looks_complete(text if text.endswith(("\n", "\r")) else text + "\n") or \
+                not (timed or flagged):
+            raise ValueError("not a FinishLynx .lif with results (no timed or DNF/DQ rows)")
+        if not text.endswith(("\n", "\r")):
+            text += "\r\n"
+        before = {r["bib"]: r for r in self.results(race_key)["finishers"]}
+        with self._lock:
+            race = self.races[race_key]
+            race.lif_truth = text
+            race.lif_truth_name = os.path.basename(name or "") or "picked .lif"
+            race.lif_truth_at = _ts(datetime.now())
+            # placed again by the file: no longer "removed from race"
+            race.removed -= set(timed)
+            unknown = sorted((b for b in timed if not self.athlete_lookup(b)),
+                             key=lambda b: (len(b), b))
+        self._changed([race_key])
+        after = {r["bib"]: r for r in self.results(race_key)["finishers"]}
+        moved = []
+        for bib, r in after.items():
+            old = before.get(bib)
+            new_t = r["finish"]["elapsed"]
+            if old is None or old["place"] != r["place"] or abs(old["finish"]["elapsed"] - new_t) >= 0.5:
+                moved.append({"bib": bib, "name": f"{r['first_name']} {r['last_name']}".strip(),
+                              "old_place": old["place"] if old else None,
+                              "old_time": old["finish"]["elapsed"] if old else None,
+                              "place": r["place"], "time": new_t})
+        gone = [{"bib": b, "name": f"{r['first_name']} {r['last_name']}".strip(),
+                 "old_place": r["place"]} for b, r in before.items() if b not in after]
+        moved.sort(key=lambda m: m["place"])
+        return {"name": race.lif_truth_name, "header": lif_header(text), "timed": len(timed),
+                "flagged": len(flagged), "finishers": len(after), "moved": moved, "gone": gone,
+                "unknown": unknown}
+
+    def clear_lif(self, race_key: int) -> bool:
+        """Back to the reads and FinishLynx's own file. False if none was picked."""
+        with self._lock:
+            race = self.races[race_key]
+            had = bool(race.lif_truth)
+            race.lif_truth = race.lif_truth_name = race.lif_truth_at = ""
+        if had:
+            self._changed([race_key])
+        return had
+
     def write_merged_lif(self, race_key: int, lynx_dir: str, rfid_dir: str) -> Optional[str]:
         """Rebuild the pane's merged .lif in the RFID folder from
         FinishLynx's file (if any) and the race state. Written atomically,
@@ -1583,7 +2214,9 @@ class RaceManager:
             return None
         same = lynx_dir and os.path.normcase(os.path.abspath(lynx_dir)) == \
             os.path.normcase(os.path.abspath(rfid_dir))
-        fl_text = None if same else self.finishlynx_lif(race_key, lynx_dir)
+        with self._lock:
+            picked = self.races[race_key].lif_truth
+        fl_text = picked or (None if same else self.finishlynx_lif(race_key, lynx_dir))
         # who FinishLynx lists untimed / has decided: drives "Save to .lif"
         untimed, decided = fl_bib_status(fl_text)
         timed = fl_timed(fl_text)        # athletes the reader missed show from this
@@ -1710,10 +2343,72 @@ class RaceManager:
                     "last_name": a.get("last_name", ""), "first_name": a.get("first_name", ""),
                     "gender": str(a.get("gender") or "").upper()[:1], "school": a.get("school", ""),
                     "finish": fin,
+                    "extra": r.extra,
                     # race key -> film correction that race would apply (each learns its own)
-                    "corrections": {str(k): self.film.correction(r.antenna, k) for k in self.races}
+                    "corrections": {str(k): self.film_correction(r, k) for k in self.races}
                                    if (fin and not r.manual) else {},
                 })
+            return out
+
+    # --------------------------------------------------------- crossings
+
+    MAX_CROSSINGS = 20
+
+    def stations(self) -> List[str]:
+        """Station ids in use: mapped readers (not off, not check-in) and
+        every reader a read came from."""
+        out = {st for st, pts in self.reader_points.items()
+               if pts not in ([self.OFF], [self.chute_reader])}
+        out.update(self.station_of(r) for r in self.reads.values()
+                   if not r.manual and not r.pinned and r.reason != self.OFF_REASON)
+        return sorted(out)
+
+    def set_crossings(self, race_key: int, station: str, before: int, after: int) -> dict:
+        """Reads before / Reads after for one station in one race
+        (2026-10-09): the station counts one read per athlete - the first
+        `before` crossings are skipped, the next counts, `after` more are
+        expected and ignored quietly, any beyond are flagged. Reads already
+        heard are renumbered. Returns the race's crossings."""
+        station = str(station or "").strip()
+        if not station:
+            raise ValueError("station missing")
+        try:
+            before, after = int(before or 0), int(after or 0)
+        except (TypeError, ValueError):
+            raise ValueError("Reads before / after must be whole numbers") from None
+        if not (0 <= before <= self.MAX_CROSSINGS and 0 <= after <= self.MAX_CROSSINGS):
+            raise ValueError(f"Reads before / after must be 0 to {self.MAX_CROSSINGS}")
+        with self._lock:
+            race = self.races[race_key]
+            if before or after:
+                race.crossings[station] = {"before": before, "after": after}
+            else:
+                race.crossings.pop(station, None)
+            bibs = set(race.roster)
+            bibs.update(r.bib for r in self.reads.values()
+                        if r.race == race_key or r.crossing_race == race_key)
+            for bib in sorted(bibs):
+                self._relabel_passes(bib, station, race_key)
+            out = {st: dict(c) for st, c in race.crossings.items()}
+        logger.info(f"{race.name}: {station} reads before {before}, after {after}")
+        self._changed([race_key])
+        return out
+
+    def extra_crossings(self, race_key: int) -> List[dict]:
+        """Athletes who crossed a station more often than the race expects
+        (Reads after): [{bib, station, label, count, read_ids}]."""
+        with self._lock:
+            by: Dict[Tuple[str, str], List[Read]] = {}
+            for r in self.reads.values():
+                if r.extra == "unexpected" and r.crossing_race == race_key:
+                    by.setdefault((r.bib, self.station_of(r)), []).append(r)
+            out = []
+            for (bib, st), reads in sorted(by.items()):
+                a = self.athlete_lookup(bib) or {}
+                out.append({"bib": bib, "station": st, "label": self._label(reads[0].point),
+                            "count": len(reads), "read_ids": [r.id for r in reads],
+                            "last_name": a.get("last_name", ""), "first_name": a.get("first_name", ""),
+                            "clocks": [_ts(r.eff_ts) for r in sorted(reads, key=lambda r: r.eff_ts)]})
             return out
 
     # ------------------------------------------------------------- state
@@ -1724,6 +2419,8 @@ class RaceManager:
                 "order": list(self.order),
                 "chute_target": self.chute_target,
                 "chute_reader": self.chute_reader,
+                "checkin_open": dict(self.checkin_open),
+                "checkin_default": dict(self.checkin_default),
                 "races": {str(k): {
                     "key": r.key, "name": r.name, "event": r.event,
                     "round": r.round, "heat": r.heat, "gender": r.gender,
@@ -1736,6 +2433,12 @@ class RaceManager:
                                 "displacers": r.scoring.displacers},
                     "fastest_pace": r.fastest_pace,
                     "floors": self.floors(r),
+                    "checkin": self._checkin_view(r),
+                    # "Select .lif file" in force: its name and when
+                    "lif_truth": {"name": r.lif_truth_name, "at": r.lif_truth_at}
+                    if r.lif_truth else None,
+                    # Reads before / after per station (absent = 0 / 0)
+                    "crossings": {st: dict(c) for st, c in r.crossings.items()},
                 } for k, r in self.races.items()},
                 "fastest_pace_default": self.fastest_pace,
                 "held": self.held_reads(),
@@ -1745,7 +2448,24 @@ class RaceManager:
                 # reader ids (local mat and/or stations) that are the finish line now
                 "finish_reader_ids": self.finish_reader_ids(),
                 "pass_window_sec": self.pass_window_sec,
+                # every station a read came from (the crossings dialog)
+                "stations": self.stations(),
             }
+
+    def _checkin_view(self, r: Race) -> dict:
+        start = self._start_of(r)
+        sch = self.checkin_schedule_of(r) if start else None
+        open_on = next((rd for rd, k in self.checkin_open.items() if k == r.key), None)
+        return {
+            "reader": self.checkin_reader_of(r), "reader_own": r.checkin_reader,
+            "open_on": open_on, "closes_at": r.checkin_closes,
+            "auto": r.checkin_auto, "start": _ts(start) if start else None,
+            "schedule": sch,
+            "opens_at": _ts(start - timedelta(minutes=sch["open_before"])) if sch else None,
+            "closes_by": (_ts(start - timedelta(minutes=sch["close_before"]))
+                          if sch and sch["close_before"] is not None else None),
+            "done": r.checkin_auto_done, "waiting": r.checkin_waiting,
+        }
 
     def _changed(self, race_keys: List[int]):
         self._save()
@@ -1761,7 +2481,9 @@ class RaceManager:
         with self._lock:
             state = {
                 "order": self.order,
-                "chute_target": self.chute_target,
+                "checkin_open": self.checkin_open,
+                "checkin_last": self.checkin_last,
+                "checkin_default": self.checkin_default,
                 "next_read_id": next(self._next_read_id),
                 "next_race_key": next(self._next_race_key),
                 "races": [{
@@ -1778,7 +2500,15 @@ class RaceManager:
                     "fastest_pace": r.fastest_pace,
                     "waived": {b: list(p) for b, p in r.waived.items()},
                     "chip_to_lif": sorted(r.chip_to_lif),
+                    "removed": sorted(r.removed),
+                    "lif_truth": r.lif_truth, "lif_truth_name": r.lif_truth_name,
+                    "lif_truth_at": r.lif_truth_at,
+                    "crossings": r.crossings,
                     "entries": sorted(r.entries),
+                    "checkin_reader": r.checkin_reader,
+                    "checkin_closes": r.checkin_closes,
+                    "checkin_auto": r.checkin_auto,
+                    "checkin_auto_done": r.checkin_auto_done,
                 } for r in self.races.values()],
                 "reads": [{
                     "id": r.id, "bib": r.bib, "ts": _ts(r.ts),
@@ -1788,31 +2518,73 @@ class RaceManager:
                     "reader": r.reader, "skipped": r.skipped, "early": r.early,
                     "sent_offset": r.sent_offset, "antenna": r.antenna,
                     "unsent": r.unsent, "off_race": r.off_race,
+                    "extra": r.extra, "crossing_race": r.crossing_race, "pinned": r.pinned,
                 } for r in self.reads.values()],
                 "film_offset": self.film.to_dict(),
             }
             # itertools.count was advanced by the reads above; rebuild
             self._next_read_id = itertools.count(state["next_read_id"])
             self._next_race_key = itertools.count(state["next_race_key"])
-        tmp = self.state_path + ".tmp"
-        try:
-            with open(tmp, "w") as f:
-                json.dump(state, f)
-            os.replace(tmp, self.state_path)
-        except OSError as e:
-            logger.error(f"Race state save failed: {e}")
+            # Still under the lock: two threads saving at once shared the
+            # .tmp file and could leave invalid JSON, or an older snapshot
+            # could land after a newer one (2026-10-04 review). The file it
+            # replaces stays as .bak, which _load falls back to.
+            tmp = self.state_path + ".tmp"
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(state, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                if os.path.exists(self.state_path):
+                    os.replace(self.state_path, self.state_path + ".bak")
+                os.replace(tmp, self.state_path)
+            except OSError as e:
+                logger.error(f"Race state save failed: {e}")
 
-    def _load(self):
+    def restore_state(self, path: str) -> dict:
+        """Reopen a closed meet (2026-10-05): load its archived
+        races-state.json into this (empty) console and save it as ours.
+        ValueError when panes or reads are loaded or the file is unreadable."""
         try:
-            with open(self.state_path) as f:
-                state = json.load(f)
-        except FileNotFoundError:
-            return
+            with open(path) as f:
+                json.load(f)
         except (OSError, ValueError) as e:
-            logger.error(f"Race state load failed: {e}")
+            raise ValueError(f"cannot read {path}: {e}") from None
+        with self._lock:
+            if self.races or self.reads:
+                raise ValueError("race panes or reads are loaded: close the current meet first")
+            self._load([path])
+            if self.state_path:
+                self._save()
+            summary = {"races": len(self.races), "reads": len(self.reads)}
+        self._changed([])
+        return summary
+
+    def _load(self, paths=None):
+        state = None
+        for path in (paths or (self.state_path, self.state_path + ".bak")):
+            try:
+                with open(path) as f:
+                    state = json.load(f)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as e:
+                logger.error(f"Race state load failed ({os.path.basename(path)}): {e}")
+                continue
+            if paths is None and path != self.state_path:
+                logger.error(f"Race state restored from {os.path.basename(path)}: "
+                             f"the last save before it may be missing")
+            break
+        if state is None:
             return
         self.order = state["order"]
-        self.chute_target = state.get("chute_target")
+        if "checkin_open" in state:
+            self.checkin_open = {str(k): int(v) for k, v in state["checkin_open"].items()}
+            self.checkin_last = {str(k): int(v) for k, v in (state.get("checkin_last") or {}).items()}
+        elif state.get("chute_target") is not None:      # before 2026-10-04: one chute
+            self.checkin_open = {self.chute_reader: state["chute_target"]}
+            self.checkin_last = dict(self.checkin_open)
+        self.checkin_default.update(state.get("checkin_default") or {})
         self._next_read_id = itertools.count(state["next_read_id"])
         self._next_race_key = itertools.count(state["next_race_key"])
         for r in state["races"]:
@@ -1828,7 +2600,17 @@ class RaceManager:
                 waived={str(b): [str(p) for p in pts]
                         for b, pts in (r.get("waived") or {}).items()},
                 chip_to_lif={str(b) for b in (r.get("chip_to_lif") or [])},
+                removed={str(b) for b in (r.get("removed") or [])},
+                lif_truth=str(r.get("lif_truth") or ""),
+                lif_truth_name=str(r.get("lif_truth_name") or ""),
+                lif_truth_at=str(r.get("lif_truth_at") or ""),
+                crossings={str(st): {"before": int(c.get("before") or 0), "after": int(c.get("after") or 0)}
+                           for st, c in (r.get("crossings") or {}).items()},
                 entries={str(b) for b in (r.get("entries") or [])},
+                checkin_reader=str(r.get("checkin_reader") or ""),
+                checkin_closes=r.get("checkin_closes"),
+                checkin_auto=r.get("checkin_auto"),
+                checkin_auto_done=bool(r.get("checkin_auto_done", r["status"] != "pending")),
             )
         for r in state["reads"]:
             self.reads[r["id"]] = Read(
@@ -1844,6 +2626,9 @@ class RaceManager:
                 antenna=int(r.get("antenna") or 0),
                 unsent=str(r.get("unsent") or ""),
                 off_race=r.get("off_race"),
+                extra=str(r.get("extra") or ""),
+                crossing_race=r.get("crossing_race"),
+                pinned=bool(r.get("pinned", False)),
             )
         self.film = FilmOffset.from_dict(state.get("film_offset"))
         logger.info(f"Race state restored: {len(self.races)} races, "

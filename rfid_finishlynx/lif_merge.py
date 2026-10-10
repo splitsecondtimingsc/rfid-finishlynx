@@ -193,6 +193,36 @@ def fl_timed(fl_text: Optional[str]) -> Dict[str, dict]:
     return out
 
 
+def lif_truth_rows(text: Optional[str]) -> Tuple[Dict[str, dict], set]:
+    """A .lif picked with "Select .lif file" (2026-10-09): (timed, flagged).
+    timed = fl_timed() plus each row's place (ties keep the file's order);
+    flagged = bibs it marks DNF/DQ/DNS/... (no finish, whatever the mat
+    read). Untimed rows (entered, not placed yet) are neither."""
+    timed = fl_timed(text)
+    flagged = set()
+    if not text:
+        return timed, flagged
+    _, rows = parse_lif(text)
+    for n, row in enumerate(rows, 1):
+        row = list(row) + [""] * max(0, ROW_FIELDS - len(row))
+        bib = row[1].strip()
+        if not bib:
+            continue
+        if bib in timed:
+            timed[bib]["place"] = int(row[0]) if row[0].strip().isdigit() else n
+        elif FLAG_RE.match(row[0] or ""):
+            flagged.add(bib)
+    return timed, flagged
+
+
+def lif_header(text: Optional[str]) -> dict:
+    """event/round/heat/name from a .lif's first line, for the import summary."""
+    header, _ = parse_lif(text or "")
+    header = list(header or []) + [""] * 4
+    return {"event": header[0].strip(), "round": header[1].strip(), "heat": header[2].strip(),
+            "name": header[3].strip()}
+
+
 def untimed_bibs(fl_text: Optional[str]) -> set:
     """Bibs FinishLynx lists untimed (see fl_bib_status)."""
     return fl_bib_status(fl_text)[0]
@@ -201,7 +231,8 @@ def untimed_bibs(fl_text: Optional[str]) -> set:
 def merge_lif(event: int, round_: int, heat: int, name: str, distance: str,
               gun: Optional[datetime], results: dict, columns: Sequence[str],
               fl_text: Optional[str] = None, splits: bool = True,
-              publish_chip: Optional[set] = None, hold_chip: Optional[set] = None) -> str:
+              publish_chip: Optional[set] = None, hold_chip: Optional[set] = None,
+              drop: Optional[set] = None) -> str:
     """The merged file. `results` is RaceManager.results() (finishers with
     film-corrected chip finishes, on-course athletes); `columns` the split
     points in course order; `fl_text` FinishLynx's own file for the event,
@@ -210,8 +241,11 @@ def merge_lif(event: int, round_: int, heat: int, name: str, distance: str,
     since a stray read at the mat (a DNF walking past) must not become a
     result (user's rule, 2026-09-30); `hold_chip` finishers the race's
     start list (.evt entries or check-in) does not name - their chip time
-    waits for "Save to .lif" too (in `publish_chip` once released)."""
+    waits for "Save to .lif" too (in `publish_chip` once released); `drop`
+    bibs the operator removed from the race - FinishLynx's rows for them are
+    left out as well."""
     publish_chip = publish_chip or set()
+    drop = drop or set()
     hold_chip = hold_chip or set()
     fl_header, fl_rows = parse_lif(fl_text) if fl_text else (None, [])
     base = parse_tod(fl_header[10]) if fl_header and len(fl_header) > 10 else None
@@ -227,6 +261,8 @@ def merge_lif(event: int, round_: int, heat: int, name: str, distance: str,
     for row in fl_rows:
         row = list(row) + [""] * max(0, ROW_FIELDS - len(row))
         bib = row[1].strip()
+        if bib in drop:
+            continue
         if bib:
             in_fl.add(bib)
         row[SPLITS] = split_field(ours[bib]) if bib in ours else ""

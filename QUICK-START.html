@@ -1,8 +1,19 @@
 <!doctype html>
+<!--
+  GUIDE VERSION - read this before editing.
+  This guide describes the middleware as of the commit named in
+  <meta name="guide-reflects-commit"> below (also printed under the title).
+  To bring it up to date, review only what changed since then:
+      git log --stat <that commit>..HEAD
+  then edit the guide, set the meta tag and the visible line to the newest
+  commit you reviewed, and bump the guide version by one.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="guide-version" content="5">
+<meta name="guide-reflects-commit" content="6cc123c">
 <title>RFID Console Quick Start</title>
 <style>
   :root { --ink: #1c1c1a; --ink-2: #4a4944; --ink-3: #77766e; --line: #dcdad3; --soft: #f4f3ef;
@@ -12,6 +23,7 @@
          font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
   main { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
   h1 { font-size: 28px; margin: 0 0 4px; }
+  .ver { font-size: 12.5px; color: var(--ink-3); margin: 0 0 14px; }
   .lede { color: var(--ink-2); margin: 0 0 24px; }
   h2 { font-size: 21px; margin: 40px 0 10px; padding-top: 14px; border-top: 2px solid var(--ink); }
   h2 .n { color: var(--accent); margin-right: 6px; }
@@ -48,17 +60,22 @@
 <main>
 
 <h1>RFID Timing Console · Quick Start</h1>
-<p class="lede">Set up a Windows timing PC so the RFID mat, the LED clocks, FinishLynx and MeetPro work
-together. Plan on 20 minutes the first time, with FinishLynx and the reader at hand.</p>
+<p class="ver">Guide version 5 · matches the middleware at commit <code>6cc123c</code> (2026-10-05). The package's
+<span class="path">VERSION.txt</span> names the commit you installed.</p>
+<p class="lede">Set up a Windows timing PC so the RFID mat, the LED clocks and FinishLynx work together, then run a
+cross-country meet from the console's <b>Meet</b> tab: entries from MileSplit, bibs, FinishLynx start lists, results,
+printouts and the upload back to MileSplit. Plan on 20 minutes for the PC the first time, with FinishLynx and the
+reader at hand.</p>
 
 <ol class="toc">
   <li><a href="#need">What you need</a></li>
   <li><a href="#install">Install</a></li>
   <li><a href="#network">Network</a></li>
   <li><a href="#finishlynx">FinishLynx settings</a></li>
-  <li><a href="#meetpro">MeetPro settings</a></li>
+  <li><a href="#meet">Set up the meet</a></li>
   <li><a href="#check">Check it: Setup check</a></li>
   <li><a href="#meetday">Meet day</a></li>
+  <li><a href="#after">After the meet</a></li>
   <li><a href="#trouble">When something is wrong</a></li>
   <li><a href="#ref">Addresses, ports and folders</a></li>
 </ol>
@@ -69,9 +86,10 @@ together. Plan on 20 minutes the first time, with FinishLynx and the reader at h
   <li><b>FinishLynx</b> with the <b>LapTime plug-in</b> installed on that PC.</li>
   <li>The <b>Vanch RFID reader</b> (VF-747P or VF-787P) with its antennas, power supply and a network cable
       into the same switch as the PC and the FinishLynx camera.</li>
+  <li>The timing company's <b>MileSplit login</b>, to pull the entries and send results (the PC needs internet for
+      those moments only). No MileSplit? A Hy-Tek <span class="path">.txt</span> or a <span class="path">.csv</span>
+      of the entries works too.</li>
   <li>Optional: the <b>LED clocks</b> on their USB-serial cables (CH340 = LED clock, PL2303 = Electro Numerics).</li>
-  <li>Optional: <b>MeetPro</b>, on this PC or on another laptop that can reach this PC's
-      <span class="path">C:\Finish_Lynx_Results</span> folder over the network.</li>
   <li>Optional: <b>Wireshark</b> (free), so the console hears the start sensor through the camera.</li>
   <li>The package: <span class="path">rfid-finishlynx-&lt;date&gt;-&lt;version&gt;.zip</span>.</li>
 </ul>
@@ -83,12 +101,13 @@ together. Plan on 20 minutes the first time, with FinishLynx and the reader at h
   <li>Open the extracted <span class="path">rfid_finishlynx</span> folder and double-click <b>INSTALL.bat</b>.</li>
   <li>If Windows says <i>"Windows protected your PC"</i>: click <b class="ui">More info</b>, then
       <b class="ui">Run anyway</b>. Accept the administrator prompt.</li>
-  <li>The installer works through 9 steps. It needs no internet. Answer its questions:
+  <li>The installer works through 10 steps. It needs no internet. Answer its questions:
     <table>
       <tr><th>It asks</th><th>Answer</th></tr>
       <tr><td>Open Network Connections now to set it</td><td>Only shown when the PC is not on the reader's network: <b>Y</b>, then see <a href="#network">Network</a>.</td></tr>
       <tr><td>Open the Wireshark download page now</td><td><b>Y</b> if you want starts from the camera. Install Wireshark with <b>Npcap</b> ticked. <b>N</b> is fine: you then set guns from the race pane.</td></tr>
       <tr><td>Change FinishLynx's settings now</td><td><b>Close FinishLynx first</b>, then <b>Y</b>. It sets everything in <a href="#finishlynx">section 4</a> for you and keeps a backup. <b>N</b> if you prefer to set them by hand.</td></tr>
+      <tr><td>Share meets with your other PCs through …\My Drive\RFID meets</td><td>Only shown when <b>Google Drive for desktop</b> is installed. <b>Y</b> on every PC of your team (same Google account): a meet made or edited on one shows up on the others. Without Drive, set it up later in the console: Meet › Info › <b>Sharing</b>.</td></tr>
     </table>
   </li>
   <li>At the end the console starts and the browser opens <span class="path">http://localhost:8080</span>.
@@ -97,9 +116,10 @@ together. Plan on 20 minutes the first time, with FinishLynx and the reader at h
 <div class="note">Last step, if you were given a <b>support key</b>: <b>Console</b> chip → <b>Updates &amp; support</b>, paste it
 into <i>Support key</i>, type a site name (your school or company), <b class="ui">Save key</b>. That lets
 <b class="ui">Send logs</b> reach whoever supports you.<br>
-<b>Updates</b> come through the same section: <b class="ui">Update now</b> appears when there is a newer version (the PC
-needs internet for that moment). Your settings, races and results are kept. Running a newer package's INSTALL.bat still
-works too.</div>
+<b>Updates</b> come through the same section: <b class="ui">Check for update</b>, then <b class="ui">Update now</b> when there is
+a newer version (the PC needs internet for that moment). Your settings, meets and results are kept. Running a newer
+package's INSTALL.bat works too: it never copies over this PC's settings, meets or race state, and if the console is
+already running it leaves it alone (close its window when no race is running and start it again from the Desktop shortcut).</div>
 
 <h2 id="network"><span class="n">3</span>Network</h2>
 <p>The reader, the FinishLynx camera and this PC must be on the same wired network,
@@ -107,7 +127,7 @@ works too.</div>
 <table>
   <tr><th>Device</th><th>Address</th></tr>
   <tr><td>RFID reader (factory setting)</td><td><code>192.168.0.128</code></td></tr>
-  <tr><td>This PC's wired adapter</td><td><code>192.168.0.200</code>, mask <code>255.255.255.0</code>, no gateway</td></tr>
+  <tr><td>This PC's wired adapter</td><td><code>192.168.0.200</code> (any free 192.168.0.x), mask <code>255.255.255.0</code>, no gateway</td></tr>
   <tr><td>FinishLynx camera (typical)</td><td><code>192.168.0.201</code></td></tr>
 </table>
 <p>If your camera network already uses 192.168.0.x, nothing to do. Otherwise set the PC's address: <kbd>Win</kbd>+<kbd>R</kbd>,
@@ -115,6 +135,8 @@ type <code>ncpa.cpl</code>, right-click the wired adapter, <b class="ui">Propert
 (TCP/IPv4)</b> → <b class="ui">Use the following IP address</b>.</p>
 <p>The console finds the reader by itself, polls <b>every antenna port</b> it has, and turns the reader's
 <b>beep off</b> each time it connects: nothing to set on the reader.</p>
+<div class="note">The console page opens on <b>this PC only</b> (<span class="path">http://localhost:8080</span>). It has no
+login, so other computers on the network cannot reach it. That is on purpose.</div>
 
 <h2 id="finishlynx"><span class="n">4</span>FinishLynx settings</h2>
 <p><b>Easiest:</b> close FinishLynx and run <span class="path">C:\rfid_finishlynx\deploy\configure-finishlynx.bat</span>
@@ -150,26 +172,72 @@ drive it instead (race time for the RFID races, time of day between), set that e
 <p>Menu <b class="ui">File → Options…</b>:</p>
 <table>
   <tr><th>Tab · setting</th><th>Folder</th><th>Why</th></tr>
-  <tr><td>Database · <b>Input Directory</b></td><td><span class="path">C:\Finish_Lynx_Results\RFID</span></td><td>MeetPro writes lynx.evt / .ppl / .sch here</td></tr>
+  <tr><td>Database · <b>Input Directory</b></td><td><span class="path">C:\Finish_Lynx_Results\RFID</span></td><td>The console writes the meet's start lists here (lynx.evt / .ppl / .sch)</td></tr>
   <tr><td>Database · <b>Output Directory</b></td><td><span class="path">C:\Finish_Lynx_Results</span></td><td>FinishLynx saves its .lif files here (Write LIF File: On)</td></tr>
   <tr><td>Event · <b>Event Directory</b></td><td><span class="path">C:\Finish_Lynx_Results</span></td><td>same folder</td></tr>
 </table>
 <figure><img src="docs/quickstart/fl-folders.png" alt="FinishLynx Options, Database tab: input and output directories">
   <figcaption>Database tab: Input Directory = the RFID subfolder, Output Directory = the results folder.</figcaption></figure>
-<div class="note">Why two folders: the console reads FinishLynx's .lif files from <span class="path">C:\Finish_Lynx_Results</span>,
-adds the RFID mile splits, and writes the combined files into <span class="path">RFID</span>, where MeetPro picks them up.
-FinishLynx and the console never write the same file.</div>
+<div class="note">Why two folders: the console writes the start lists into <span class="path">RFID</span>, reads FinishLynx's
+.lif files from <span class="path">C:\Finish_Lynx_Results</span>, adds the RFID mile splits and writes the combined files
+back into <span class="path">RFID</span>. FinishLynx and the console never write the same file.</div>
 
-<h2 id="meetpro"><span class="n">5</span>MeetPro settings</h2>
+<h2 id="meet"><span class="n">5</span>Set up the meet</h2>
+<p>Everything about the meet (teams, athletes, bibs, races and their order) lives on the console's <b>Meet</b> tab.
+The console rewrites FinishLynx's start lists every time something there changes, and makes a race pane on the
+<b>Races</b> tab for every race: there is nothing to export or load by hand. Do this before meet day, on the timing PC.</p>
+
+<h3>5a. Create the meet</h3>
+<p><b>Meet</b> tab, then one of:</p>
+<ul>
+  <li><b class="ui">Import from MileSplit</b> (usual). Log in with the timing company's MileSplit email and password; leave
+      <b>Remember me on this computer</b> ticked so the console can log in again by itself later. Pick the month,
+      <b class="ui">List meets</b>, then <b class="ui">Import</b> on your meet. Tick <b>full team rosters</b> to bring in every
+      athlete on each team's roster, not just the entered ones: only entered athletes get bibs, the rest are there to be
+      found quickly for race-day changes.</li>
+  <li><b class="ui">Import file</b>: a Hy-Tek <span class="path">.txt</span>, a <span class="path">.csv</span>, or a MileSplit
+      entries <span class="path">.json</span>.</li>
+  <li><b class="ui">New</b>: an empty meet; add teams and athletes by hand.</li>
+</ul>
+<p>The meet opens on its <b>Info</b> page: check the name, date, host and scoring (5 scorers, 2 displacers by default),
+<b class="ui">Save info</b>. Its <b>To fix</b> list says what is still missing, with a link to each. The red number on the
+Meet tab counts the same things.</p>
+<figure><img src="docs/quickstart/console-meet-info.png" alt="Meet tab, Info page">
+  <figcaption>Meet › Info: the meet's details, what is still to fix, MileSplit, and the before-the-meet printouts.</figcaption></figure>
+
+<h3>5b. Teams and bibs</h3>
 <ol>
-  <li>MeetPro: <b class="ui">Interfaces → F.A.T. → Setup</b>.</li>
-  <li><b>Directory</b> = <span class="path">C:\Finish_Lynx_Results\RFID</span>. From another laptop: the same folder over the
-      network (share the timing PC's <span class="path">C:\Finish_Lynx_Results</span> folder).</li>
-  <li>Leave <i>Don't Write Start Lists</i> unticked. Export start lists as usual; they land in the RFID folder.</li>
-  <li>For splits in MeetPro, use <b>Splits Auto-Pull</b>; for MileSplit Live during the race, <b>Start MS Live Sync</b> on the XC tab.</li>
+  <li><b>Teams</b>: untick <b>Scores</b> for a team that runs without being scored.</li>
+  <li><b>Athletes</b> → <b class="ui">Assign bibs…</b>. Type the bib ranges you were given (leave the last <b>End</b> blank
+      to keep counting upward), pick one sequence or per-team blocks, and drag the <b>Order</b> (for example Team,
+      Gender, Last name). The preview shows who gets which number; <b class="ui">Assign N bibs</b>. Keep
+      <b>Retain existing bibs</b> ticked when you run it again later: only athletes without a bib get one.</li>
 </ol>
-<div class="note warn">If the console ever stops mid-meet: point MeetPro's directory back to
-<span class="path">C:\Finish_Lynx_Results</span>. Results keep flowing from FinishLynx; only the mile splits stop.</div>
+<figure><img src="docs/quickstart/console-bibs.png" alt="Assign bibs dialog with ranges, order and a preview">
+  <figcaption>Assign bibs: ranges, order, and a preview before anything changes.</figcaption></figure>
+
+<h3>5c. Races, run order and start times</h3>
+<p><b>Races</b> page of the Meet tab: drag the races into the order they run (FinishLynx gets the same order). Type a
+<b>Start</b> time for each race if you have a schedule (<code>8am</code>, <code>9:30</code>, <code>1:15</code>: a bare
+1:00 to 6:59 is the afternoon). Start times are optional; with them, check-in can open and close by itself
+(<a href="#meetday">section 7</a>), the schedule prints with times, and MileSplit Live can show them.</p>
+<figure><img src="docs/quickstart/console-meet-races.png" alt="Meet tab, Races page with run order and start times">
+  <figcaption>Meet › Races: run order, start times, entries per race.</figcaption></figure>
+
+<h3>5d. Print and check</h3>
+<ul>
+  <li>Info page, <b>Print before the meet</b>: <b class="ui">Schedule</b>, <b class="ui">All start lists</b>,
+      <b class="ui">Rosters…</b> (one page per school with each athlete's bib), <b class="ui">Team labels</b>,
+      <b class="ui">Competitor labels</b>. Every printout opens in a new browser tab: print it from there, or save it under any name and folder.</li>
+  <li>Info page, <b>Start lists</b> row: <i>"Start lists written to FinishLynx &lt;time&gt;"</i>. Open FinishLynx: the
+      meet's events are there.</li>
+  <li>MileSplit meets: turn <b>Live results</b> on (Info page, or the <b>Live Results</b> switch at the top) if the meet
+      shows live results on MileSplit.</li>
+</ul>
+<div class="note warn">Still running the meet from <b>MeetPro</b>? Leave the Meet tab with no meet open and set MeetPro's
+<b class="ui">Interfaces → F.A.T. → Setup → Directory</b> to <span class="path">C:\Finish_Lynx_Results\RFID</span>. The
+console then reads MeetPro's start lists from there, but makes no race panes for you: add one per race on the Races tab
+with <b class="ui">+ New race</b>, using the race's FinishLynx event, round and heat.</div>
 
 <h2 id="check"><span class="n">6</span>Check it: Setup check</h2>
 <p>Open the console (<span class="path">http://localhost:8080</span> or the Desktop shortcut) and click the
@@ -177,47 +245,95 @@ FinishLynx and the console never write the same file.</div>
 <span class="ok">✓</span> is fine, <span class="x">✗</span> needs fixing and says how, <b>–</b> does not apply yet
 (for example, no clock plugged in). <b class="ui">Check again</b> after each fix.</p>
 <figure><img src="docs/quickstart/console-setup.png" alt="Console chip open with the Setup check list">
-  <figcaption>A PC that still needs its folders and MeetPro set: each ✗ says what to do.</figcaption></figure>
+  <figcaption>The Console chip's Setup check on a PC still being set up: each ✗ says what to do.</figcaption></figure>
 <p>Some rows only turn green once things are running: the LapTime link when FinishLynx is open, the scoreboard feed once an
-event is armed, the camera once FinishLynx talks to it.</p>
+event is armed, the camera once FinishLynx talks to it. With a meet open, the <b>Folders</b> group checks that the meet's
+start lists are in the RFID folder. With no meet open it asks about MeetPro instead (section 5's MeetPro note).</p>
 
 <h2 id="meetday"><span class="n">7</span>Meet day</h2>
-<figure><img src="docs/quickstart/console-main.png" alt="The console with a race running">
-  <figcaption>Top: status chips. Toolbar: Load meet…, Export meet…, Races from .evt, + New race, Close meet.</figcaption></figure>
+<figure><img src="docs/quickstart/console-races.png" alt="The Races tab with a race running">
+  <figcaption>Races tab: status chips and the Finish Reads / Live Results switches on top, one pane per race.</figcaption></figure>
 <ol>
-  <li><b>Power up</b> the reader, clocks and FinishLynx. The console starts by itself at login.</li>
-  <li><b class="ui">Load meet…</b> → <b>Load</b>. It reads the athletes MeetPro exported.</li>
-  <li><b class="ui">Races from .evt</b>: tick the races the mat will time, <b class="ui">Add selected</b>.</li>
-  <li>Click <b class="ui">Check-in</b> on the next race.</li>
+  <li><b>Power up</b> the reader, clocks and FinishLynx. The console starts by itself at login, with the meet still open
+      (if not: <b>Meet</b> tab → <b class="ui">Open</b> → your meet).</li>
+  <li><b>Walk-ups and changes</b> on the Meet tab's <b>Athletes</b> page: <b class="ui">+ Add athlete</b> (it offers the
+      next free bib and checks for someone already on the roster: <b class="ui">Use this athlete</b>); a row's ⋮ menu
+      scratches, moves to another race or marks exhibition. Typing a bib someone else holds offers to swap them, or
+      <i>"Someone else is wearing N…"</i> when a runner borrowed a bib. FinishLynx's start lists follow every change.</li>
+  <li><b>Check-in</b>: on the Races tab, <b class="ui">Check-in…</b> on the next race, pick the reader (the chute by
+      default), optionally <b>Close in</b> a few minutes, <b class="ui">Open check-in now</b>. Several races can check in
+      at once, one per reader. With start times, the dialog's <b>Meet default</b> (for example open 30 minutes before,
+      close at the gun) does this for every race by itself.</li>
   <li><b>The gun</b> arms the race by itself (camera start or FinishLynx's clock). Otherwise open the race's
-      <b class="ui">Gun ▾</b> and pick the start or <b class="ui">Gun = now</b>. The LED clocks follow the running race.</li>
+      <b class="ui">Gun ▾</b> and pick the start or <b class="ui">Gun = now</b>. The LED clocks follow the running race;
+      <b class="ui">Show on clocks</b> puts an earlier race back on them for its stragglers.</li>
   <li>Finishers appear as they cross. <b>Needs attention</b> lists anyone missing a mile split:
       <b class="ui">Estimate</b>, <b class="ui">Add time</b> or <b class="ui">Publish without split</b>.</li>
-  <li><b class="ui">Close race</b> when the last runner is in. The clocks go back to the time of day.</li>
-  <li>After the meet: <b class="ui">Export meet…</b> for a CSV, then <b class="ui">Close meet</b> (archives everything, then
-      clears the console for the next meet).</li>
+  <li><b class="ui">Close race</b> when the last runner is in. Anyone who ran in a race they were not entered in (or with a
+      bib nobody has) has a pulsing <b class="ui">Not in this race</b> chip on their row and is left out of the results:
+      click it for <b class="ui">Swap bib with…</b>, <b class="ui">Override</b> or <b class="ui">Ignore</b>, now or later.
+      The clocks go back to the time of day.</li>
+  <li><b>Results</b>: Meet tab → <b>Results</b>, pick the race, clear anything under <i>To resolve before final</i>,
+      <b class="ui">Mark final</b>. Print from <b>Print</b>: its drop-down picks the races (the one shown, others, or <b>All races</b>) for results, team scores, awards, labels… Then
+      <b class="ui">Send MileSplit Results</b>.</li>
 </ol>
+<div class="note"><b>Finish Reads</b> switch (top right): <b>OFF</b> for warm-ups or tag checks over the mats. Reads are still
+heard and shown, but nothing goes to FinishLynx. A red strip reminds you while it is off, and it is always ON after a
+restart. <b>Live Results</b> switch: MileSplit Live for a meet imported from MileSplit (greyed out until you are logged in).</div>
+<figure><img src="docs/quickstart/console-results.png" alt="Meet tab, Results page">
+  <figcaption>Meet › Results: the race's results, Mark final, printing and MileSplit.</figcaption></figure>
 <h3>The chips</h3>
 <table>
   <tr><th>Chip</th><th>Click it for</th></tr>
-  <tr><td><b>Console</b></td><td>Setup check, restart, <b>Update now</b>, <b>Send logs</b>.</td></tr>
-  <tr><td><b>Stations</b></td><td>The reader: <b class="ui">⚙ Reader…</b> for antenna ports and power; where each mat stands (Finish, Mile 1…).</td></tr>
-  <tr><td><b>FinishLynx</b></td><td>LapTime link, scoreboard feed, camera start.</td></tr>
-  <tr><td><b>Clocks</b></td><td>Each LED clock; <b class="ui">Time of day</b>, count-up, 12/24-hour.</td></tr>
+  <tr><td><b>Console</b></td><td>Setup check, start/stop, <b>Update now</b>, <b>Roll back</b>, <b>Send logs</b>, restart.</td></tr>
+  <tr><td><b>Stations</b></td><td>Each reader and where it stands (Finish, Mile 1…, Check-in (chute)); <b class="ui">⚙ Reader…</b> for antenna ports and power; the radio gateway for split stations.</td></tr>
+  <tr><td><b>FinishLynx</b></td><td>LapTime link and what it sends, scoreboard feed, camera start, film offset.</td></tr>
+  <tr><td><b>Clocks</b></td><td>Each LED clock; <b class="ui">Time of day</b>, count-up, 12/24-hour, <b class="ui">Back to auto</b>.</td></tr>
 </table>
 <figure><img src="docs/quickstart/console-clocks.png" alt="Clocks chip open">
   <figcaption>Clocks: what they show and why; Time of day holds until Back to auto, or until you set a race's gun.</figcaption></figure>
 
-<h2 id="trouble"><span class="n">8</span>When something is wrong</h2>
+<h2 id="after"><span class="n">8</span>After the meet</h2>
+<ol>
+  <li>Every race final and sent (Meet → <b>Results</b>: <b class="ui">Send MileSplit Results</b> sends every final race).
+      <b>Print</b> with <b>All races</b> ticked prints them together.</li>
+  <li><b>Close FinishLynx.</b></li>
+  <li>Meet tab → <b class="ui">Close meet</b>. The dialog shows the folder it will make,
+      <span class="path">C:\Finish_Lynx_Results\&lt;date&gt; &lt;meet name&gt;\</span>; <b class="ui">Close meet &amp; clear</b>.
+      Everything goes into it: the meet, every read, FinishLynx's files and the RFID files, each copy checked before the
+      original is removed. The console, the results folder and the RFID folder are then empty for the next meet.</li>
+</ol>
+<p>If the close stops (a full disk, a locked file), the message says why; fix it and click <b class="ui">Close meet</b>
+again to finish. Nothing is deleted without a checked copy.</p>
+<p><b>Opening a closed meet again:</b> Meet → <b class="ui">Open</b> → the meet marked <b>CLOSED</b> (or
+<b class="ui">Browse…</b> to <span class="path">&lt;meet folder&gt; - MEET FILE.json</span> if the folder moved). It asks how:</p>
+<ul>
+  <li><b class="ui">Open without FinishLynx</b> to print results, send them again, or fix names, bibs or teams. Nothing
+      is copied into the results folder and results cannot be changed. <b class="ui">Save &amp; close</b> writes the meet
+      file back into its meet folder.</li>
+  <li><b class="ui">Open with FinishLynx</b> to fix a result. First close FinishLynx and the meet that is open now: the
+      results and RFID folders must be empty (the dialog lists anything still there, so nothing is overwritten). Its files,
+      panes and reads come back as they were. Fix it, <b class="ui">Mark final</b>, send it, and <b class="ui">Close meet</b>
+      again.</li>
+</ul>
+
+<h2 id="trouble"><span class="n">9</span>When something is wrong</h2>
 <table>
   <tr><th>You see</th><th>Do</th></tr>
   <tr><td>Stations chip red / "Reader offline"</td><td>Reader power and network cable; PC on 192.168.0.x (<a href="#network">section 3</a>). The console reconnects by itself.</td></tr>
-  <tr><td>Reads in the console, nothing in FinishLynx</td><td>FinishLynx LapTime Device must be <b>Lynx</b> on port 5000; an event armed and started.</td></tr>
+  <tr><td>Reads in the console, nothing in FinishLynx</td><td><b>Finish Reads</b> switch ON; FinishLynx LapTime Device <b>Lynx</b> on port 5000; an event armed and started.</td></tr>
+  <tr><td>FinishLynx has no events / old athletes</td><td>Meet → Info, <b>Start lists</b> row. "No FinishLynx (RFID) folder set": the Meet tab's <b class="ui">Lynx folder</b> button → <span class="path">C:\Finish_Lynx_Results</span>. Then check FinishLynx's Input Directory (<a href="#finishlynx">section 4c</a>).</td></tr>
   <tr><td>LED clock dark</td><td>Setup check → clock drivers. If FinishLynx's own scoreboard list has an entry on that clock's COM port, FinishLynx holds the port: remove that entry or pick a different clock.</td></tr>
   <tr><td>Clock shows the wrong thing</td><td>Clocks chip → <b class="ui">Back to auto</b>.</td></tr>
   <tr><td>Gun not picked up</td><td>Race <b class="ui">Gun ▾</b> → pick the start or <b class="ui">Gun = now</b>. For camera starts: Wireshark installed, FinishLynx open.</td></tr>
-  <tr><td>MeetPro shows no splits</td><td>MeetPro's F.A.T. directory = the RFID folder (<a href="#meetpro">section 5</a>).</td></tr>
-  <tr><td>Console page does not load</td><td>Double-click the Desktop <b>RFID Console</b> shortcut, then reload the page (F5).</td></tr>
+  <tr><td>Live Results switch greyed out</td><td>Log in to MileSplit (Meet → Info) and use a meet imported from MileSplit.</td></tr>
+  <tr><td>MileSplit refuses the results</td><td>Too few athletes carry a MileSplit id: Meet → Athletes, <b>MileSplit id review</b>, approve the matches.</td></tr>
+  <tr><td>A coach says bibs were swapped (or the wrong kid wore one) after the race</td><td>Meet → <b>Athletes</b>: type the
+      bib, then <b class="ui">Swap bibs</b> or <b class="ui">Someone else is wearing N…</b>. A race not yet final re-scores at once.
+      A final race: <b class="ui">Re-finalize</b> when the console offers it, then <b class="ui">Send the corrected results</b> if
+      they were on MileSplit already. MileSplit Live follows by itself.</td></tr>
+  <tr><td>Close meet refused</td><td>Close FinishLynx first.</td></tr>
+  <tr><td>Console page does not load</td><td>Open it on the timing PC itself. Double-click the Desktop <b>RFID Console</b> shortcut, then reload the page (F5).</td></tr>
   <tr><td>After an update, buttons look old</td><td>Reload the page (F5).</td></tr>
   <tr><td>The new version misbehaves</td><td>Console chip → <b class="ui">Roll back</b>. If it will not even start, it goes back to the
       previous version by itself after three tries.</td></tr>
@@ -225,17 +341,19 @@ event is armed, the camera once FinishLynx talks to it.</p>
       day: the logs keep two weeks.</td></tr>
 </table>
 
-<h2 id="ref"><span class="n">9</span>Addresses, ports and folders</h2>
+<h2 id="ref"><span class="n">10</span>Addresses, ports and folders</h2>
 <table>
   <tr><th>What</th><th>Value</th></tr>
-  <tr><td>Console web page</td><td><code>http://localhost:8080</code></td></tr>
+  <tr><td>Console web page</td><td><code>http://localhost:8080</code> (this PC only)</td></tr>
   <tr><td>FinishLynx LapTime (console → FinishLynx)</td><td>TCP <code>5000</code>, Device Lynx</td></tr>
   <tr><td>FinishLynx scoreboard (FinishLynx → console)</td><td>UDP <code>127.0.0.1:5891</code>, Example2.lss</td></tr>
   <tr><td>Reader</td><td><code>192.168.0.128</code> (Modbus TCP 502, UDP 1969)</td></tr>
-  <tr><td>Install folder</td><td><span class="path">C:\rfid_finishlynx</span> (settings: <span class="path">config.yaml</span>, log: <span class="path">rfid_timing.log</span>)</td></tr>
+  <tr><td>Install folder</td><td><span class="path">C:\rfid_finishlynx</span> (settings: <span class="path">config.yaml</span>, log: <span class="path">rfid_timing.log</span>, meets: <span class="path">meet\</span>)</td></tr>
   <tr><td>FinishLynx results</td><td><span class="path">C:\Finish_Lynx_Results</span></td></tr>
-  <tr><td>MeetPro ↔ console</td><td><span class="path">C:\Finish_Lynx_Results\RFID</span></td></tr>
-  <tr><td>Closed meets (archive)</td><td><span class="path">C:\rfid_finishlynx\closed-meets</span></td></tr>
+  <tr><td>Start lists and RFID .lif files</td><td><span class="path">C:\Finish_Lynx_Results\RFID</span></td></tr>
+  <tr><td>Closed meets</td><td><span class="path">C:\Finish_Lynx_Results\&lt;date&gt; &lt;meet name&gt;\</span>, opened again from
+      <span class="path">&lt;meet folder&gt; - MEET FILE.json</span></td></tr>
+  <tr><td>MileSplit saved login</td><td><span class="path">%LOCALAPPDATA%\rfid_finishlynx</span> (Meet → Info → <b>Forget saved login</b> removes it)</td></tr>
 </table>
 
 </main>

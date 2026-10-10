@@ -144,6 +144,81 @@ class TestMeetProEvidence(SetupCase):
         self.assertIn("Directory =", r["fix"])
 
 
+
+class TestMeetStartLists(SetupCase):
+    """A meet open on the Meet tab writes the start lists itself: the row
+    judges that write and never mentions MeetPro (2026-10-05)."""
+
+    def app_with(self, sl, active=True):
+        app = fake_app(self.results)
+        app.meet_service = SimpleNamespace(active=active, start_lists_status=lambda: sl)
+        return app
+
+    def test_written(self):
+        r = self.rows(self.app_with({"written_at": "2026-10-10T08:12:40", "warnings": [], "errors": []}))
+        self.assertNotIn("meetpro_dir", r)
+        row = r["meet_start_lists"]
+        self.assertIs(row["ok"], True)
+        self.assertEqual(row["detail"], "written 2026-10-10 08:12")
+        self.assertNotIn("MeetPro", row["label"] + row["detail"] + row["fix"])
+
+    def test_warnings_counted(self):
+        row = self.rows(self.app_with({"written_at": "2026-10-10T08:12:40", "warnings": ["a", "b"],
+                                       "errors": []}))["meet_start_lists"]
+        self.assertIs(row["ok"], True)
+        self.assertIn("2 warnings", row["detail"])
+
+    def test_problems_have_a_fix(self):
+        for sl, words in (({"errors": ["Permission denied"]}, "Permission denied"),
+                          ({"skipped": "no folder"}, "no results folder")):
+            row = self.rows(self.app_with(sl))["meet_start_lists"]
+            self.assertIs(row["ok"], False, sl)
+            self.assertIn(words, row["detail"])
+            self.assertTrue(row["fix"])
+
+    def test_nothing_to_judge(self):
+        for sl in ({"skipped": "preview"}, {"skipped": "empty meet"}, {}):
+            self.assertIsNone(self.rows(self.app_with(sl))["meet_start_lists"]["ok"], sl)
+
+    def test_after_a_restart_the_files_on_disk_count(self):
+        """Nothing written since the console started, but the start lists
+        from before the restart are in the RFID folder: that is fine."""
+        rfid = os.path.join(self.results, "RFID")
+        os.makedirs(rfid)
+        open(os.path.join(rfid, "lynx.evt"), "w").close()
+        row = self.rows(self.app_with({}))["meet_start_lists"]
+        self.assertIs(row["ok"], True)
+        self.assertIn("in the folder since", row["detail"])
+
+    def test_no_meet_open_asks_about_meetpro(self):
+        r = self.rows(self.app_with(None, active=False))
+        self.assertIn("meetpro_dir", r)
+        self.assertNotIn("meet_start_lists", r)
+        self.assertIn("Meet tab", r["meetpro_dir"]["detail"])
+
+    def test_real_service(self):
+        """MeetService.start_lists_status: None with no meet, then the write."""
+        import shutil
+        from rfid_finishlynx.meet_service import MeetService
+        fixture = os.path.join(os.path.dirname(__file__), "fixtures", "milesplit", "entries-xc.json")
+        rfid = os.path.join(self.results, "RFID")
+        app = SimpleNamespace(race_manager=None, hardware_allowed=True, lif_dirs=lambda: (self.results, rfid),
+                              config=SimpleNamespace(event_directory=self.results))
+        svc = MeetService(os.path.join(self.tmp.name, "meet"), app,
+                          token_path=os.path.join(self.tmp.name, "tok.json"),
+                          transport=lambda *a: (500, None), emit=lambda *a: None, autoload_evt=lambda d: None)
+        self.addCleanup(shutil.rmtree, os.path.join(self.tmp.name, "meet"), True)
+        self.assertIsNone(svc.start_lists_status())
+        with open(fixture, encoding="utf-8") as f:
+            svc.import_milesplit(json.load(f), name="Svc", day="2026-10-10")
+        svc.assign({"rows": [["100", ""]]})
+        sl = svc.start_lists_status()
+        self.assertTrue(sl["written_at"], sl)
+        self.assertTrue(os.path.isfile(os.path.join(rfid, "lynx.evt")))
+        row = setup_check.meet_start_lists_row(sl, rfid)
+        self.assertIs(row["ok"], True, row)
+
+
 class TestHelpers(unittest.TestCase):
 
     def test_same_subnet(self):

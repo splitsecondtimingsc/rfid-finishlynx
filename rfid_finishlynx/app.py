@@ -8,7 +8,7 @@ import socket
 import subprocess
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
@@ -1295,6 +1295,7 @@ class Application:
     # Defaults for objects built without __init__ (tests use Application.__new__)
     hardware_allowed: bool = True
     preview_reason: Optional[str] = None
+    meet_service = None  # MeetService (meet_service.py); None = legacy mode only
 
     def __init__(self, config: Config, config_path: Optional[str] = None):
         """Initialize application.
@@ -1319,8 +1320,9 @@ class Application:
                                    if owner else "another middleware owns the hardware on this machine")
         self.hardware_allowed: bool = self.preview_reason is None
         # read FinishLynx's window title for its open event (fl_window.py);
-        # set here only, so preview and test instances never look
-        self.watch_finishlynx_window: bool = self.hardware_allowed
+        # set here only, so preview and test instances never look. Finish
+        # line only: a station has no FinishLynx (and no fl_window.py).
+        self.watch_finishlynx_window: bool = self.hardware_allowed and config.mode == "finish_line"
         if not self.hardware_allowed:
             logger.warning(f"PREVIEW MODE - no hardware will be touched: {self.preview_reason}")
 
@@ -1386,7 +1388,31 @@ class Application:
             logger.info("Race manager initialized")
             for reader, pts in config.races.reader_points.items():
                 logger.info(f"Reader {reader} stands at {' then '.join(pts)} (passes counted)")
+        # Meet management (2026-10-03, docs/MEET-API.md): meet/ beside the
+        # race state file, like closed-meets/. With no meet open (meet/ACTIVE
+        # absent) it changes nothing: legacy .evt/.ppl as before. Finish line
+        # only; the station package leaves the meet code out.
+        self.meet_service = None
+        if config.mode == "finish_line":
+            try:
+                from .meet_service import MeetService
+                base = os.path.dirname(os.path.abspath(config.races.state_file or "races-state.json"))
+                self.meet_service = MeetService(os.path.join(base, "meet"), self)
+            except Exception:
+                logger.exception("Meet management unavailable")
+        # Meets shared between machines (meet_sync.py, 2026-10-07): only the
+        # copy that owns the hardware syncs (a preview copy never does).
+        self.meet_sync = None
+        if self.meet_service is not None and self.hardware_allowed:
+            self.start_meet_sync()
+        # Check-in timers and schedules (2026-10-04): start times from the
+        # meet; only the copy that owns the hardware opens/closes check-ins
+        if self.race_manager:
+            self.race_manager.start_time_of = self._race_start_time
+            if self.hardware_allowed:
+                threading.Thread(target=self._checkin_loop, daemon=True).start()
         self._pending_lock = threading.Lock()
+        self._config_save_lock = threading.Lock()
 
         # Web callbacks
         self._on_tag_read_callback = None
@@ -1551,6 +1577,7 @@ class Application:
                 tag.pane_reason = res.get("reason") or ""
                 tag.pane_race = res.get("race")
                 tag.pane_early = bool(res.get("early"))
+                tag.pane_crossing = res.get("crossing") or ""
                 tag.read_id = res.get("read_id")
                 if res.get("state") == "ignored" and str(res.get("reason", "")).startswith("pass "):
                     tag.point = "-"        # a "not a split" crossing (loop course)
@@ -1702,7 +1729,7 @@ class Application:
                     self._notes[read.id] = f"not sent to FinishLynx: {other}"
                     logger.info(f"Read {read.id}: finish kept out of FinishLynx - {other}")
                     continue
-                corr = mgr.film.correction(read.antenna, read.race) if not read.manual else 0.0
+                corr = mgr.film_correction(read, read.race) if not read.manual else 0.0
                 self._send_or_queue_finishlynx(read.bib, read.eff_ts - timedelta(seconds=corr))
                 mgr.mark_sent(read.id, corr)
                 self._notes[read.id] = f"sent to FinishLynx as bib {read.bib}"
@@ -1746,8 +1773,10 @@ class Application:
         pane - with one exception: a finish the panes hold as TOO EARLY
         (a loop-course mat crossed mid-race, a tester) is kept back, since
         with Total Laps 1 it would become the athlete's final time; it goes
-        the moment a pane takes it (_flush_unsent). Publishing off keeps
-        everything back (set_publishing).
+        the moment a pane takes it (_flush_unsent). So is a crossing that is
+        not the one counting at its station (Reads before / after, a repeat,
+        a walk back - 2026-10-09). Publishing off keeps everything back
+        (set_publishing).
         """
         read_id = getattr(tag, "read_id", None) if tag is not None else None
         if not getattr(self, "publishing", True):
@@ -1760,6 +1789,18 @@ class Application:
         if reader_id == "USER":
             return True
         if self.reader_is_finish(reader_id):
+            if tag is not None and getattr(tag, "pane_crossing", ""):
+                # Not the crossing that counts at this station (2026-10-09:
+                # a loop crossing skipped by Reads before, the same crossing
+                # read again, a walk back after the finish): FinishLynx gets
+                # one read per runner, like the pane. It goes if the
+                # numbering later makes it the one that counts, or the
+                # operator places it (_flush_unsent).
+                if read_id is not None and self.race_manager:
+                    self.race_manager.mark_unsent(read_id, "early")
+                logger.info(f"Read {tag.bib} at {reader_id}: finish not sent to FinishLynx - "
+                            f"{getattr(tag, 'pane_reason', '') or 'not the crossing that counts'}")
+                return False
             if tag is not None and getattr(tag, "pane_early", False):
                 if read_id is not None and self.race_manager:
                     self.race_manager.mark_unsent(read_id, "early")
@@ -1784,6 +1825,30 @@ class Application:
         logger.info(f"Read {tag.bib} at {reader_id}: not sent to FinishLynx - "
                     f"{state} by the panes ({getattr(tag, 'pane_reason', '') or 'no reason'})")
         return False
+
+    def _race_start_time(self, race) -> Optional[datetime]:
+        """A pane's scheduled start from the open meet (meet.json), or None."""
+        meet = self.meet_service.meet if self.meet_service else None
+        mr = meet.race(race.event, race.round or 1, race.heat or 1) if meet else None
+        if not mr or not mr.start_time:
+            return None
+        try:
+            day = date.fromisoformat(meet.date)
+        except (TypeError, ValueError):
+            day = date.today()
+        hh, mm = mr.start_time.split(":")
+        return datetime.combine(day, dtime(int(hh), int(mm)))
+
+    CHECKIN_TICK_SEC = 5.0
+
+    def _checkin_loop(self):
+        while True:
+            time.sleep(self.CHECKIN_TICK_SEC)
+            try:
+                if self.race_manager:
+                    self.race_manager.tick_checkins()
+            except Exception:
+                logger.exception("Check-in timer failed")
 
     def finishlynx_open_event(self):
         """(event, round, heat, name) from FinishLynx's window title, or None
@@ -1854,15 +1919,17 @@ class Application:
     def _send_or_queue_finishlynx(self, identifier: str, ts: datetime):
         """Send one LapTime packet, or queue it while FinishLynx is away."""
         event_num, round_num, heat_num = self._get_current_event_info()
-        if self.finishlynx.is_connected:
-            self.finishlynx.send_split(identifier, ts, event_num, round_num, heat_num)
-        else:
-            with self._pending_lock:
-                self._pending_sends.append({
-                    'bib': identifier, 'timestamp': ts,
-                    'event': event_num, 'round': round_num, 'heat': heat_num
-                })
-                logger.debug(f"Queued {identifier} for FinishLynx (disconnected, {len(self._pending_sends)} pending)")
+        # A send can be the one that finds the link broken: queue it too, not
+        # only reads that arrive once it is known to be down (2026-10-04 review)
+        if self.finishlynx.is_connected and \
+                self.finishlynx.send_split(identifier, ts, event_num, round_num, heat_num):
+            return
+        with self._pending_lock:
+            self._pending_sends.append({
+                'bib': identifier, 'timestamp': ts,
+                'event': event_num, 'round': round_num, 'heat': heat_num
+            })
+            logger.debug(f"Queued {identifier} for FinishLynx (not sent, {len(self._pending_sends)} pending)")
 
     def send_restored_read(self, read_id: int) -> Optional[str]:
         """The operator put a held/ignored read into a race by hand. With
@@ -2409,19 +2476,10 @@ class Application:
 
         # Send to FinishLynx with event/round/heat (an accepted read is a
         # finish-mat read: film-corrected like any other)
-        event_num, round_num, heat_num = self._get_current_event_info()
         fl_ts = timestamp - timedelta(seconds=self.film_correction())
         if self.finishlynx:
-            if self.finishlynx.is_connected:
-                self.finishlynx.send_split(identifier, fl_ts, event_num, round_num, heat_num)
-                logger.info(f"Sent accepted bib {bib} (ID {identifier}) to FinishLynx (E{event_num}R{round_num}H{heat_num})")
-            else:
-                with self._pending_lock:
-                    self._pending_sends.append({
-                        'bib': identifier, 'timestamp': fl_ts,
-                        'event': event_num, 'round': round_num, 'heat': heat_num
-                    })
-                    logger.debug(f"Queued accepted {identifier} for FinishLynx (disconnected)")
+            self._send_or_queue_finishlynx(identifier, fl_ts)
+            logger.info(f"Accepted bib {bib} (ID {identifier}) for FinishLynx")
 
     def start(self) -> bool:
         """Start reading.
@@ -3354,6 +3412,14 @@ class Application:
         # Merged with FinishLynx's own file, into the RFID folder MeetPro
         # reads (see lif_merge.py); FinishLynx's folder is never written.
         self.refresh_merged_lifs(race_keys)
+        # Meet mode: drop cached live results, nudge MileSplit Live (debounced
+        # by its pusher). Called outside RaceManager's lock. (2026-10-03)
+        svc = getattr(self, "meet_service", None)
+        if svc is not None:
+            try:
+                svc.on_races_changed(race_keys)
+            except Exception:
+                logger.exception("Meet update after a race change failed")
         try:
             from . import web
             web.emit_races_update()
@@ -3936,6 +4002,44 @@ class Application:
         logger.info(f"Time sync test: {results['message']}")
         return results
 
+    def start_meet_sync(self) -> None:
+        """(Re)start the meet sync runners from config.meet_sync: one per
+        shared place (the NAS, a shared folder or both, 2026-10-08)."""
+        from .meet_sync import ServiceStore, SyncGroup, SyncRunner, engines_from_config
+        if self.meet_sync is not None:
+            self.meet_sync.stop()
+            self.meet_sync = None
+        svc = self.meet_service
+        svc.store.on_save = None
+        try:
+            base = os.path.dirname(os.path.abspath(self.config.races.state_file or "races-state.json"))
+            engines = engines_from_config(self.config, svc.root, base, store=ServiceStore(svc))
+        except Exception:
+            logger.exception("Meet sync unavailable")
+            return
+        if not engines:
+            return
+
+        def racing() -> bool:
+            mgr = self.race_manager
+            return bool(mgr) and any(r.status == "racing" for r in list(mgr.races.values()))
+
+        def report(rep: dict) -> None:
+            try:
+                from . import web
+                web.socketio.emit("meet_sync", group.status())
+                if rep.get("added") or rep.get("merged"):
+                    web.emit_meet_update()                 # the Open list and badges
+            except Exception:
+                logger.debug("meet sync emit failed", exc_info=True)
+
+        group = SyncGroup([(name, SyncRunner(sync, is_racing=racing, on_report=report))
+                           for name, sync in engines])
+        svc.store.on_save = group.notify_saved
+        group.start()
+        self.meet_sync = group
+        logger.info(f"Meet sync on: {' + '.join(s.transport.name for _, s in engines)} as {engines[0][1].machine}")
+
     def save_config(self):
         """Save current configuration to file."""
         if not self.config_path:
@@ -4031,12 +4135,27 @@ class Application:
                 'logs_token': self.config.support.logs_token,
                 'site_name': self.config.support.site_name,
             },
+            'meet_sync': {                       # docs/MEET-SYNC-PLAN.md (2026-10-07)
+                'enabled': self.config.meet_sync.enabled,
+                'mode': self.config.meet_sync.mode,
+                'remote': self.config.meet_sync.remote,
+                'folder': self.config.meet_sync.folder,
+                'machine': self.config.meet_sync.machine,
+                'git': self.config.meet_sync.git,
+            },
             'event_directory': self.config.event_directory,
             'evt_file': self.config.evt_file,
         }
 
-        with open(self.config_path, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False)
+        # temp file + replace: a power cut mid-save keeps the last good
+        # config.yaml instead of a truncated one (2026-10-04 review)
+        tmp = self.config_path + ".tmp"
+        with self._config_save_lock:
+            with open(tmp, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.config_path)
 
         logger.info(f"Configuration saved to {self.config_path}")
 
@@ -4252,6 +4371,20 @@ class Application:
             return future.result(timeout=10.0)
         except Exception as e:
             return {"success": False, "message": str(e)}
+
+    def start_clock_check(self, reader_id: str, count: int = 10) -> Dict:
+        """Ping a station over the radio (RemoteManager.start_clock_check)."""
+        if not self.remote_manager:
+            return {"success": False, "message": "Remote manager not active"}
+        mgr = self.race_manager
+        if mgr and any(r.status == "racing" for r in mgr.races.values()):
+            return {"success": False, "message": "A race is running: the pings would hold up its reads"}
+        return self.remote_manager.start_clock_check(reader_id, count)
+
+    def get_clock_check(self, reader_id: str) -> Dict:
+        if not self.remote_manager:
+            return {"running": False, "sent": 0, "replies": 0}
+        return self.remote_manager.get_clock_check(reader_id)
 
     def get_remote_config(self, reader_id: str, section: str = "all") -> Dict:
         """Fetch config from a remote unit."""
