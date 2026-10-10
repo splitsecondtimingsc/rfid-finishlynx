@@ -235,12 +235,19 @@ instead of a git remote.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | /api/meet/sync | — | `{enabled, mode, folder, remote, machine, preview, transport, last_ok, last_error, last_sent, last_received, waiting_to_send, conflicts: {meet: n}, targets: [{target: git\|folder, label, last_ok, last_sent, last_received, last_error, ...}], clashes: [{target, meet, index, path, machine, mine, theirs, at}], last: {target: report}}`; `last_ok` = the oldest of the places' last check (a check runs every 5 min whether or not anything moved); `last_sent` / `last_received` = the newest time a meet actually went out / came in |
+| GET | /api/meet/sync | — | `{enabled, mode, folder, remote, machine, preview, transport, last_ok, last_error, last_sent, last_received, waiting_to_send, conflicts: {meet: n}, targets: [{target: git\|folder, label, last_ok, last_sent, last_received, last_error, ...}], clashes: [{target, meet, index, path, machine, mine, theirs, at}], separate: {meet: n}, separate_copies: [{target, meet, machine, name, why: origin\|bibs\|ids, bib_diffs, other_runner, examples: [{name, mine, theirs}], kept, at}], bib_dups: {meet: [bib]}, bib_dup_list: [{target, meet, bib, names, machine}], last: {target: report}}`; `last_ok` = the oldest of the places' last check (a check runs every 5 min whether or not anything moved); `last_sent` / `last_received` = the newest time a meet actually went out / came in |
 | POST | /api/meet/sync | `{}` | Sync now, every place: `{report: {published, merged, added, waiting, errors: {target: msg}} (+ error when all are offline), sync}`; 409 when off |
 | POST | /api/meet/sync/settings | `{mode: off\|folder\|git\|both, folder, remote, machine}` | saved to config.yaml, sync restarted; 400 when a folder doesn't exist or the NAS has no place |
 | POST | /api/meet/sync/conflicts/<meet>/<i> | `{take: theirs\|mine, target}` | settle one clash (target: the place it was recorded on; default the first); 409 while a race runs |
+| POST | /api/meet/sync/separate/<meet> | `{machine, take: theirs\|mine, target}` | another PC's separate import of the meet (2026-10-10): `theirs` replaces this PC's copy with it (ours saved in `<state>/replaced/`), `mine` keeps ours until that copy changes; 409 while a race runs, 404 when nothing is recorded |
 
 Socket `meet_sync` after every round (re-read GET /api/meet/sync).
+
+Separate imports (2026-10-10): a copy of a meet that another PC imported on its own (a different `meet.origin`,
+or, for a meet without one, a first look at that PC's copy where a runner has another bib or an athlete id is
+another runner) is never merged; it waits in `separate_copies` until a PC picks one. Creating a meet that is
+already here (same MileSplit meet, or same date + name, after a sync round) is refused with 409
+`{error, existing, existing_name}`: Refresh is how a meet takes MileSplit's changes. Bib edits are sent at once.
 
 ## Socket
 

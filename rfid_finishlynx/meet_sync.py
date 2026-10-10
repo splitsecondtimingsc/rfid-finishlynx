@@ -24,6 +24,25 @@ this machine's value is kept and the clash is recorded in `conflicts`, for
 the console to offer "Take theirs" per record. Nothing is lost: the other
 machine's copy stays in its own file (and in git history).
 
+Separate imports are never merged (2026-10-10: the Jim Crawford and Bob
+Jenkins meets were imported from MileSplit on two PCs a day apart; MileSplit's
+entries had changed in between, so every bib after the first change was
+numbered differently, and the copies were merged by athlete id - a1, a2 ...
+meaning different runners on each PC - so race day showed the wrong names).
+A copy is someone else's import when its meet.origin differs from ours, or,
+for a meet made before origins were kept, when we meet it for the first time
+(no common base) and the same runner has a different bib, or one athlete id
+is a different runner, in the two copies. Such a copy is recorded in
+`separate` and left alone - each PC keeps its own - until the operator picks
+one in the console: "Use theirs" replaces this PC's copy (ours is kept in
+<state>/replaced/), "Keep mine" stops asking until that copy changes.
+
+Bibs (2026-10-10, user: once any machine assigns bibs, every machine has the
+same ones): a bib edit is sent at once instead of a minute later
+(notify_saved(urgent=True)), and a merge that leaves one bib on two athletes
+(two PCs handing out the same next number while apart) is recorded in
+`bib_dups` until someone renumbers one of them.
+
     python -m rfid_finishlynx.meet_sync --once      # one sync with config.yaml
 """
 
@@ -220,6 +239,66 @@ def _merge(base, mine, theirs, path, conflicts):
                       "mine": None if mine is MISSING else mine,
                       "theirs": None if theirs is MISSING else theirs})
     return mine
+
+
+# ------------------------------------------------- separate imports, bibs
+
+def _norm(s) -> str:
+    return re.sub(r"\s+", " ", str(s or "")).strip().lower()
+
+
+def _people(meet: dict) -> Tuple[Dict[str, tuple], Dict[tuple, Tuple[str, str]]]:
+    """(athlete id -> who, who -> (bib, "First Last")). Who = the MileSplit
+    id when known, else name + team name + gender (team ids differ between
+    separate imports, names don't)."""
+    teams = {t.get("id"): _norm(t.get("name")) for t in meet.get("teams") or []}
+    by_id, by_who = {}, {}
+    for a in meet.get("athletes") or []:
+        who = (("ms", a["milesplit_id"]) if a.get("milesplit_id") is not None else
+               ("name", _norm(a.get("first")), _norm(a.get("last")), teams.get(a.get("team_id"), ""),
+                a.get("gender") or ""))
+        by_id[a.get("id")] = who
+        by_who.setdefault(who, (_bib_key(a.get("bib")), f"{a.get('first', '')} {a.get('last', '')}".strip()))
+    return by_id, by_who
+
+
+def _bib_key(bib) -> str:
+    """A bib as the reader reports it ("0101" is 101), "" for none."""
+    text = str(bib if bib is not None else "").strip()
+    return str(int(text)) if text.isdigit() and int(text) > 0 else text
+
+
+def separate_copies(mine: dict, theirs: dict, have_base: bool) -> Optional[dict]:
+    """Why `theirs` is a different import of this meet than `mine` (see the
+    module notes), or None to merge it as usual. Snapshots, sync header or
+    not. have_base: an earlier copy of theirs is known (a three-way merge),
+    which settles it for a meet without origins."""
+    m, t = mine.get("meet") or {}, theirs.get("meet") or {}
+    om, ot = (m.get("meet") or {}).get("origin") or "", (t.get("meet") or {}).get("origin") or ""
+    if om and ot and om == ot:
+        return None
+    if not (om and ot) and have_base:
+        return None
+    ids_m, who_m = _people(m)
+    ids_t, who_t = _people(t)
+    other_runner = sum(1 for aid, who in ids_m.items() if aid in ids_t and ids_t[aid] != who)
+    diffs = [{"name": who_m[w][1], "mine": who_m[w][0], "theirs": who_t[w][0]}
+             for w in who_m if w in who_t and who_m[w][0] and who_t[w][0] and who_m[w][0] != who_t[w][0]]
+    if not (om and ot) and not other_runner and not diffs:
+        return None
+    return {"why": "origin" if om and ot else "bibs" if diffs else "ids",
+            "bib_diffs": len(diffs), "other_runner": other_runner,
+            "examples": diffs[:6], "athletes_mine": len(ids_m), "athletes_theirs": len(ids_t)}
+
+
+def duplicate_bibs(snap: Optional[dict]) -> Dict[str, List[str]]:
+    """bib -> the names of the athletes holding it, for bibs held twice."""
+    held: Dict[str, List[str]] = {}
+    for a in ((snap or {}).get("meet") or {}).get("athletes") or []:
+        b = _bib_key(a.get("bib"))
+        if b:
+            held.setdefault(b, []).append(f"{a.get('first', '')} {a.get('last', '')}".strip())
+    return {b: names for b, names in held.items() if len(names) > 1}
 
 
 def set_at(snap: dict, steps: list, value, remove: bool = False) -> None:
@@ -586,6 +665,8 @@ class MeetSync:
         s.setdefault("published", {})      # meet -> digest of our last snapshot
         s.setdefault("merged", {})         # meet -> machine -> digest merged
         s.setdefault("conflicts", {})      # meet -> [ {path, mine, theirs, machine, at} ]
+        s.setdefault("separate", {})       # meet -> machine -> {why, digest, kept, ...} (2026-10-10)
+        s.setdefault("bib_dups", {})       # meet -> {bib: [names]} after a merge (2026-10-10)
         s.setdefault("last_ok", None)          # last check, whether or not anything moved
         s.setdefault("last_error", "")
         # when something actually went out / came in - "synced 2 min ago" read
@@ -685,6 +766,7 @@ class MeetSync:
                     if machine == self.machine or self._merge_in(meet_id, machine, data, report):
                         if getattr(data, "sig", None):
                             self.seen[data.path] = data.sig
+            self._check_bib_dups()
             published = []
             for meet_id in self.store.ids():
                 d = self._digest_own(meet_id)
@@ -777,21 +859,41 @@ class MeetSync:
         d = digest(theirs)
         if self.state["merged"].get(meet_id, {}).get(machine) == d:
             return True
+        sep = (self.state["separate"].get(meet_id) or {}).get(machine)
+        if sep and sep.get("kept") and sep.get("digest") == d:
+            return True                          # "Keep mine": until their copy changes
         base = _without_header(self._pick_base(meet_id, machine, theirs))
         theirs = _without_header(theirs)
-        out = {"conflicts": [], "changed": False, "added": False}
+        out = {"conflicts": [], "changed": False, "added": False, "separate": None, "dups": {}}
 
         def merge(mine):
             if mine is None:
                 merged, out["added"] = theirs, True
             else:
+                out["separate"] = separate_copies(mine, theirs, base is not None)
+                if out["separate"]:
+                    return None                  # someone else's import: never merged
                 merged, out["conflicts"] = merge3(base, mine, theirs)
+                before = duplicate_bibs(mine)
+                out["dups"] = {b: n for b, n in duplicate_bibs(merged).items() if b not in before}
             out["changed"] = digest(merged) != digest(mine)
             return merged if out["changed"] else None
 
         if self.store.update(meet_id, merge) is False:
             report.setdefault("waiting", []).append(meet_id)      # a race is running: next round
             return False
+        if out["separate"]:
+            self._record_separate(meet_id, machine, data, d, out["separate"], report)
+            return True
+        if (self.state["separate"].get(meet_id) or {}).pop(machine, None) is not None:
+            if not self.state["separate"][meet_id]:
+                self.state["separate"].pop(meet_id)
+        if out["dups"]:
+            self.state["bib_dups"].setdefault(meet_id, {}).update(
+                {b: dict(names=n, machine=machine) for b, n in out["dups"].items()})
+            report.setdefault("bib_dups", {})[meet_id] = out["dups"]
+            logger.warning(f"Meet sync: taking in {machine}'s {meet_id} left bib(s) "
+                           f"{', '.join(sorted(out['dups']))} on two athletes")
         conflicts = out["conflicts"]
         if out["added"]:
             report["added"].append(meet_id)
@@ -808,6 +910,78 @@ class MeetSync:
             report["conflicts"][meet_id] = conflicts
             logger.warning(f"Meet sync: {len(conflicts)} change(s) to {meet_id} clash with {machine}'s; kept ours")
         return True
+
+    def _separate_path(self, meet_id: str, machine: str) -> str:
+        return os.path.join(self.state_dir, "separate", meet_id, machine + SNAP_EXT)
+
+    def _record_separate(self, meet_id: str, machine: str, data: bytes, d: str,
+                         why: dict, report: dict) -> None:
+        """Their copy is another import (separate_copies): kept aside for
+        "Use theirs", nothing merged."""
+        p = self._separate_path(meet_id, machine)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p + ".tmp", "wb") as f:
+            f.write(pack(unpack(data)))
+        os.replace(p + ".tmp", p)
+        theirs = unpack(data)
+        self.state["separate"].setdefault(meet_id, {})[machine] = dict(
+            why, digest=d, kept=False, at=datetime.now().isoformat(timespec="seconds"),
+            name=((theirs.get("meet") or {}).get("meet") or {}).get("name") or meet_id)
+        report.setdefault("separate", {}).setdefault(meet_id, []).append(machine)
+        logger.error(f"Meet sync: {machine}'s copy of {meet_id} is a separate import "
+                     f"({why['bib_diffs']} runner(s) with other bibs) - not merged; pick one in Sharing")
+
+    def resolve_separate(self, meet_id: str, machine: str, take: str) -> bool:
+        """A separate import: "theirs" replaces this PC's copy with theirs
+        (ours is kept in <state>/replaced/ and sent as theirs from now on),
+        "mine" stops asking until their copy changes. False = not now (race)."""
+        rec = (self.state["separate"].get(meet_id) or {}).get(machine)
+        if rec is None:
+            raise IndexError(f"no separate copy of {meet_id} from {machine}")
+        if take == "mine":
+            rec["kept"] = True
+            self._save_state()
+            return True
+        with open(self._separate_path(meet_id, machine), "rb") as f:
+            data = f.read()
+        theirs = _without_header(unpack(data))
+        mine = self.store.read(meet_id)
+        if mine is not None:
+            keep = os.path.join(self.state_dir, "replaced", meet_id,
+                                datetime.now().strftime("%Y%m%d-%H%M%S") + SNAP_EXT)
+            os.makedirs(os.path.dirname(keep), exist_ok=True)
+            with open(keep, "wb") as f:
+                f.write(pack(mine))
+            logger.warning(f"Meet sync: {meet_id} replaced by {machine}'s copy; ours kept in {keep}")
+        if self.store.update(meet_id, lambda cur: copy.deepcopy(theirs)) is False:
+            return False
+        self._set_base(meet_id, machine, data)
+        self.state["merged"].setdefault(meet_id, {})[machine] = digest(theirs)
+        # the other copies of this meet: looked at again against the new one
+        self.state["separate"].pop(meet_id, None)
+        self.state["conflicts"].pop(meet_id, None)
+        self.state["bib_dups"].pop(meet_id, None)
+        for other in list(self.state["merged"].get(meet_id) or {}):
+            if other != machine:
+                self.state["merged"][meet_id].pop(other)
+                try:
+                    os.remove(self._base_path(meet_id, other))     # a base of the other import
+                except OSError:
+                    pass
+        for p in [p for p in self.seen if meet_id in p]:
+            self.seen.pop(p)
+        self._save_state()
+        return True
+
+    def _check_bib_dups(self) -> None:
+        """Bibs a merge put on two athletes: forgotten once renumbered."""
+        for meet_id in list(self.state["bib_dups"]):
+            now = duplicate_bibs(self.store.read(meet_id))
+            left = {b: v for b, v in self.state["bib_dups"][meet_id].items() if b in now}
+            if left:
+                self.state["bib_dups"][meet_id] = left
+            else:
+                self.state["bib_dups"].pop(meet_id)
 
 
 # ---------------------------------------------------------------- runner
@@ -832,6 +1006,7 @@ class SyncRunner:
         self.lock = threading.Lock()          # one round at a time
         self.wake = threading.Event()
         self.saved_at: Optional[float] = None
+        self.urgent = False                   # a bib edit: send now (2026-10-10)
         self.last_push = -1e9
         self.last_round = -1e9
         self.fails = 0
@@ -839,14 +1014,20 @@ class SyncRunner:
         self.running = False
         self.last_report: dict = {}
 
-    def notify_saved(self, meet_id: str = "") -> None:
+    def notify_saved(self, meet_id: str = "", urgent: bool = False) -> None:
+        """urgent: bibs changed - sent on the next tick (15 s at most), not
+        after the minute's quiet, so another PC can't hand out the same
+        numbers meanwhile (2026-10-10)."""
         self.saved_at = self.clock()
+        if urgent:
+            self.urgent = True
+            self.wake.set()
 
     def due(self) -> bool:
         now = self.clock()
         if now < self.next_try:
             return False
-        if self.fails:
+        if self.fails or self.urgent:
             return True                           # offline: retry on the backoff, not the 5 min
         if self.saved_at is not None and now - self.saved_at >= self.QUIET \
                 and now - self.last_push >= self.MIN_PUSH:
@@ -857,6 +1038,7 @@ class SyncRunner:
         with self.lock:
             now = self.clock()
             self.last_round = now
+            self.urgent = False
             try:
                 rep = self.sync.sync_once()
             except SyncOffline as e:
@@ -910,6 +1092,10 @@ class SyncRunner:
                 "last_sent": st.get("last_sent"), "last_received": st.get("last_received"),
                 "waiting_to_send": self.saved_at is not None,
                 "conflicts": {m: len(c) for m, c in (st.get("conflicts") or {}).items() if c},
+                "separate": {m: sum(1 for r in recs.values() if not r.get("kept"))
+                             for m, recs in (st.get("separate") or {}).items()
+                             if any(not r.get("kept") for r in recs.values())},
+                "bib_dups": {m: sorted(b) for m, b in (st.get("bib_dups") or {}).items() if b},
                 "last": self.last_report}
 
 
@@ -943,9 +1129,9 @@ class SyncGroup:
         for _, r in self.runners:
             r.stop()
 
-    def notify_saved(self, meet_id: str = "") -> None:
+    def notify_saved(self, meet_id: str = "", urgent: bool = False) -> None:
         for _, r in self.runners:
-            r.notify_saved(meet_id)
+            r.notify_saved(meet_id, urgent=urgent)
 
     def sync_now(self) -> dict:
         out = {"merged": [], "added": [], "published": [], "waiting": [], "errors": {}}
@@ -955,6 +1141,9 @@ class SyncGroup:
                 out["errors"][name] = rep["error"]
             for k in ("merged", "added", "published", "waiting"):
                 out[k] += [m for m in rep.get(k) or [] if m not in out[k]]
+            for k in ("separate", "bib_dups"):
+                if rep.get(k):
+                    out.setdefault(k, {}).update(rep[k])
         if out["errors"] and len(out["errors"]) == len(self.runners):
             out["error"] = "; ".join(f"{TARGET_LABEL[n]}: {e}" for n, e in out["errors"].items())
         return out
@@ -963,9 +1152,15 @@ class SyncGroup:
         each = [(name, r.status()) for name, r in self.runners]
         oks = [s["last_ok"] for _, s in each]
         conflicts: Dict[str, int] = {}
+        separate: Dict[str, int] = {}
+        bib_dups: Dict[str, List[str]] = {}
         for _, s in each:
             for m, n in s["conflicts"].items():
                 conflicts[m] = conflicts.get(m, 0) + n
+            for m, n in s.get("separate", {}).items():
+                separate[m] = separate.get(m, 0) + n
+            for m, b in s.get("bib_dups", {}).items():
+                bib_dups[m] = sorted(set(bib_dups.get(m, [])) | set(b))
         return {"machine": each[0][1]["machine"],
                 "transport": "+".join(s["transport"] for _, s in each),
                 "last_ok": None if None in oks else min(oks),          # when every place last took it
@@ -973,8 +1168,8 @@ class SyncGroup:
                 "last_received": max((s["last_received"] for _, s in each if s["last_received"]), default=None),
                 "last_error": "; ".join(f"{TARGET_LABEL[n]}: {s['last_error']}" for n, s in each if s["last_error"]),
                 "waiting_to_send": any(s["waiting_to_send"] for _, s in each),
-                "conflicts": conflicts,
-                "targets": [{"target": n, "label": TARGET_LABEL[n], **s} for n, s in each],
+                "conflicts": conflicts, "separate": separate, "bib_dups": bib_dups,
+                "targets":[{"target": n, "label": TARGET_LABEL[n], **s} for n, s in each],
                 "last": {n: s["last"] for n, s in each}}
 
     def clashes(self) -> List[dict]:
@@ -986,6 +1181,29 @@ class SyncGroup:
                                 "machine": x.get("machine"), "mine": x.get("mine"),
                                 "theirs": x.get("theirs"), "at": x.get("at")})
         return out
+
+    def separate(self) -> List[dict]:
+        """Separate imports waiting for the operator, and those kept."""
+        out = []
+        for name, r in self.runners:
+            for meet_id, recs in (r.sync.state.get("separate") or {}).items():
+                for machine, x in recs.items():
+                    out.append(dict({k: v for k, v in x.items() if k != "digest"},
+                                    target=name, meet=meet_id, machine=machine))
+        return out
+
+    def bib_dups(self) -> List[dict]:
+        out = []
+        for name, r in self.runners:
+            for meet_id, dups in (r.sync.state.get("bib_dups") or {}).items():
+                for bib, x in sorted(dups.items(), key=lambda kv: _bib_sort(kv[0])):
+                    out.append({"target": name, "meet": meet_id, "bib": bib,
+                                "names": x.get("names"), "machine": x.get("machine")})
+        return out
+
+
+def _bib_sort(bib: str):
+    return (0, int(bib), "") if bib.isdigit() else (1, 0, bib)
 
 
 TARGET_LABEL = {"git": "NAS", "folder": "Shared folder"}

@@ -170,6 +170,8 @@ def _sync_payload(app) -> dict:
     if app.meet_sync is not None:
         out.update(app.meet_sync.status())
         out["clashes"] = app.meet_sync.clashes()
+        out["separate_copies"] = app.meet_sync.separate()     # 2026-10-10
+        out["bib_dup_list"] = app.meet_sync.bib_dups()
     return out
 
 
@@ -243,6 +245,33 @@ def sync_resolve(meet_id, index):
     return _ok(sync=_sync_payload(app))
 
 
+@bp.route("/api/meet/sync/separate/<meet_id>", methods=["POST"])
+def sync_separate(meet_id):
+    """{machine, take: "theirs" | "mine", target: "git" | "folder"} for a
+    copy of the meet another PC imported separately (2026-10-10): "theirs"
+    replaces this PC's copy with it, "mine" keeps ours (the other PC then
+    has to take ours)."""
+    app = _app()
+    if app.meet_sync is None:
+        raise MeetError("meet sync is off", 409)
+    d = _body()
+    take = d.get("take")
+    if take not in ("theirs", "mine"):
+        raise MeetError("take must be theirs or mine", 400)
+    try:
+        sync = app.meet_sync.runner(d["target"]).sync if d.get("target") else app.meet_sync.sync
+        done = sync.resolve_separate(meet_id, str(d.get("machine") or ""), take)
+    except KeyError:
+        raise MeetError(f"meet sync isn't using {d.get('target')}", 404) from None
+    except (IndexError, OSError) as e:
+        raise MeetError(str(e), 404) from None
+    if done is False:
+        raise MeetError("a race is running: try again when it is done", 409)
+    if take == "theirs":
+        app.meet_sync.notify_saved(meet_id, urgent=True)
+    return _ok(sync=_sync_payload(app))
+
+
 @bp.route("/api/meet/detach", methods=["POST"])
 def meet_detach():
     return jsonify({"ok": True, **_svc().detach()})
@@ -263,6 +292,8 @@ def meet_divisions():
 
 def _import_milesplit(svc, d: dict):
     if d.get("fetch"):
+        # already here: refused before the minute-long fetch (2026-10-10)
+        svc.check_new_meet(d.get("meet_id"), str(d.get("name") or ""), str(d.get("date") or ""))
         entries, rosters = svc.fetch_milesplit(d.get("tc_id"), d.get("meet_id"),
                                                bool(d.get("full_rosters")))
     else:

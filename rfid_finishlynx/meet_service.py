@@ -295,9 +295,63 @@ class MeetService:
         # made, results are not changed; leaving it saves the meet file back
         # into the meet folder.
         self.file_only = False
+        # The meet sync (a SyncGroup) while it runs, set by the app
+        # (2026-10-10): a round before a meet is created or bibs are
+        # assigned, and bib edits sent at once.
+        self.meet_sync = None
         self._load_active()
 
     # ------------------------------------------------------------ plumbing
+
+    def _sync_round(self) -> Optional[str]:
+        """One sync round now, so this PC has the other PCs' meets and bibs
+        before it creates a meet or hands out numbers (2026-10-10). The
+        error when no shared place could be reached, None when it worked or
+        sync is off. Never under our lock: the round merges into the open
+        meet through apply_synced."""
+        self._assert_unlocked()
+        group = self.meet_sync
+        if group is None:
+            return None
+        try:
+            rep = group.sync_now()
+        except Exception as e:                     # never stops the edit itself
+            logger.exception("Meet sync round before an edit failed")
+            return str(e)
+        return rep.get("error") or None
+
+    def _refuse_second_import(self, *, milesplit_meet_id=None, name: str = "", day: str = "") -> None:
+        """A meet that is already here (made on this PC, or another PC's
+        brought in by sync) is never imported again: a second import numbers
+        its bibs again, and every runner after the first entry that changed
+        on MileSplit gets someone else's number (2026-10-10, Jim Crawford and
+        Bob Jenkins). Refresh is how a meet takes MileSplit's changes."""
+        same = self.store.find(milesplit_meet_id=milesplit_meet_id, name=name, date_iso=day)
+        if not same:
+            return
+        try:
+            existing = self.store.load(same[0]).meet.name or same[0]
+        except (OSError, ValueError, KeyError, TypeError):
+            existing = same[0]
+        raise MeetError(f"{existing} is already on this PC (made here or brought in from "
+                        f"another PC). Open it and use Refresh to take MileSplit's changes: "
+                        f"importing it again would number its bibs again.", 409,
+                        existing=same[0], existing_name=existing)
+
+    def check_new_meet(self, milesplit_meet_id=None, name: str = "", day: str = "") -> None:
+        """With no meet open (an import would create one): refuse a meet that
+        is already here, before fetching anything."""
+        mid = _opt_int(milesplit_meet_id, "meet_id")
+        with self._lock:
+            if self.meet is None:
+                self._refuse_second_import(milesplit_meet_id=mid, name=name,
+                                           day=_iso_date(day or _today()) if name else "")
+
+    def _sync_note(self, error: Optional[str]) -> List[str]:
+        if not error:
+            return []
+        return [f"Couldn't reach the other PCs to check for this meet ({error}). If another PC "
+                f"already has it, don't assign bibs here: use that PC's copy once sync is back."]
 
     @property
     def preview(self) -> bool:
@@ -609,8 +663,13 @@ class MeetService:
                 self._reindex_locked()
                 raise
             self._undo = (undo, before) if undo else None
+            bibs_moved = ({a["id"]: a["bib"] for a in before["athletes"]}
+                          != {a.id: a.bib for a in self.meet.athletes})
             summary = self._commit_locked(write)
         self._post(summary)
+        group = self.meet_sync
+        if bibs_moved and group is not None:
+            group.notify_saved(self.meet.meet.id if self.meet else "", urgent=True)   # 2026-10-10
         return result, summary
 
     # ------------------------------------------------------------ summary
@@ -751,7 +810,9 @@ class MeetService:
         kind = str(d.get("kind") or "xc")
         if kind not in KINDS:
             raise MeetError(f"kind must be one of {', '.join(KINDS)}", 400)
+        self._sync_round()
         with self._lock:
+            self._refuse_second_import(name=name, day=day)
             meet = self.store.create(name, day, host=str(d.get("host") or ""),
                                      location=str(d.get("location") or ""), kind=kind)
         logger.info(f"Meet created: {meet.meet.id}")
@@ -1070,9 +1131,11 @@ class MeetService:
         if entries is None:
             raise MeetError("no entries given", 400)
         tc, mid = _opt_int(tc_id, "tc_id"), _opt_int(meet_id, "meet_id")
+        sync_error = self._sync_round() if self.meet is None else None
         with self._lock:
             creating = self.meet is None
             if creating:
+                self._refuse_second_import(milesplit_meet_id=mid, name=name, day=_iso_date(day or _today()))
                 base = self.store.create(name or (f"MileSplit meet {mid}" if mid else "Imported meet"),
                                          _iso_date(day or _today()), host=host, location=location)
                 info = base.meet
@@ -1082,6 +1145,7 @@ class MeetService:
                 except (ValueError, TypeError, AttributeError) as e:
                     shutil.rmtree(os.path.join(self.root, info.id), ignore_errors=True)
                     raise MeetError(f"not a MileSplit entries pull: {e}", 400) from None
+                report.notes += self._sync_note(sync_error)
                 self._set_meet_locked(meet)
                 self._write_active(meet.meet.id)
                 self._save_pulls_locked(entries, rosters)
@@ -1136,13 +1200,16 @@ class MeetService:
             pull = importers.parse_csv(data) if is_csv else importers.parse_hytek(data, include_roster_only)
         except (ValueError, UnicodeDecodeError) as e:
             raise MeetError(f"{filename}: {e}", 400) from None
+        sync_error = self._sync_round() if self.meet is None else None
         with self._lock:
             creating = self.meet is None
             if creating:
                 stem = os.path.splitext(os.path.basename(filename))[0] or "Imported meet"
+                self._refuse_second_import(name=name or stem, day=_iso_date(day or _today()))
                 base = self.store.create(name or stem, _iso_date(day or _today()))
                 meet = Meet(meet=base.meet)
                 report = importers.merge(meet, pull)
+                report.notes += self._sync_note(sync_error)
                 self._set_meet_locked(meet)
                 self._write_active(meet.meet.id)
                 summary = self._commit_locked()
@@ -1564,6 +1631,9 @@ class MeetService:
             with self._lock:
                 rep = bibs.assign(self._require(), ranges=ranges, dry_run=True, **kw)
             return rep.to_dict(), None
+        # the other PCs' bibs first, so the next free number is free on
+        # every PC (2026-10-10); the new ones go out as soon as they're saved
+        self._sync_round()
 
         def change(meet: Meet):
             if ranges is not None:

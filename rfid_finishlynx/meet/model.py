@@ -13,6 +13,14 @@ os.replace) like races-state.json. `meet/` is gitignored and never promoted.
 Conventions (2026-10-03):
 - ids are ours and never reused: athlete "a<n>", team "t<n>". A rename or
   team move keeps the id, so history and MileSplit ids stay attached.
+  Meet sync merges the PCs' copies by these ids, so anything added after
+  the first import gets an id no other PC can hand out (2026-10-10, bibs
+  scrambled at the Jim Crawford meet): "ms<MileSplit id>" / "tms<MileSplit
+  id>" when MileSplit knows the athlete or team (the same runner added on
+  two PCs is one record), else "a<n>-<random>" / "t<n>-<random>".
+- meet.origin: a random id given when the meet is created and carried by
+  every PC's copy of it. Two imports of the same meet have different ones,
+  and meet sync refuses to merge them (their bibs were numbered apart).
 - bib is a string of digits, unique across the meet (it is what the tag
   encodes); "" = not assigned yet. Stored canonical (no leading zeros,
   1..MAX_BIB); lookups compare by number, as the reader reports it.
@@ -36,6 +44,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
@@ -104,6 +113,9 @@ class MeetInfo:
     scoring: Scoring = field(default_factory=Scoring)
     # [] = no divisions: the meet scores as it always has (2026-10-06).
     divisions: List[Division] = field(default_factory=list)
+    # Which import this is (2026-10-10): set once by MeetStore.create, the
+    # same in every PC's copy; "" = a meet made before it was kept.
+    origin: str = ""
 
 
 @dataclass
@@ -294,19 +306,36 @@ class Meet:
 
     # ---------------------------------------------------------- id helpers
 
-    def _next_id(self, prefix: str, items) -> str:
+    def _next_num(self, prefix: str, items) -> int:
         n = 0
         for it in items:
-            m = re.fullmatch(prefix + r"(\d+)", it.id)
+            m = re.fullmatch(prefix + r"(\d+)(?:-[0-9a-z]+)?", it.id)
             if m:
                 n = max(n, int(m.group(1)))
-        return f"{prefix}{n + 1}"
+        return n + 1
 
-    def new_athlete_id(self) -> str:
-        return self._next_id("a", self.athletes)
+    def _next_id(self, prefix: str, items) -> str:
+        """Sequential: only for a meet's first import (one PC, nothing shared yet)."""
+        return f"{prefix}{self._next_num(prefix, items)}"
 
-    def new_team_id(self) -> str:
-        return self._next_id("t", self.teams)
+    def _unique_id(self, prefix: str, items, milesplit_id: Optional[int]) -> str:
+        """An id no other PC's copy can hand out for someone else (see the
+        module notes, 2026-10-10)."""
+        taken = {it.id for it in items}
+        if milesplit_id is not None:
+            ms = f"{'t' if prefix == 't' else ''}ms{milesplit_id}"
+            if ms not in taken:
+                return ms
+        while True:
+            new = f"{prefix}{self._next_num(prefix, items)}-{secrets.token_hex(2)}"
+            if new not in taken:
+                return new
+
+    def new_athlete_id(self, milesplit_id: Optional[int] = None) -> str:
+        return self._unique_id("a", self.athletes, milesplit_id)
+
+    def new_team_id(self, milesplit_id: Optional[int] = None) -> str:
+        return self._unique_id("t", self.teams, milesplit_id)
 
     def new_division_id(self, taken=()) -> str:
         """Next "d<n>" past every division id in the meet, its races, or
@@ -614,5 +643,28 @@ class MeetStore:
         while self.exists(meet_id):
             meet_id, n = f"{base}-{n}", n + 1
         meet = Meet(meet=MeetInfo(id=meet_id, name=name, date=date_iso, **info))
+        meet.meet.origin = meet.meet.origin or secrets.token_hex(8)
         self.save(meet)
         return meet
+
+    def find(self, *, milesplit_meet_id: Optional[int] = None, name: str = "",
+             date_iso: str = "") -> List[str]:
+        """Meets here that are this one (2026-10-10): the same MileSplit meet,
+        or the same date + name (the id create() would start from). Meet
+        sync brings the other PCs' meets in, so after a sync round this
+        also finds a meet another PC made."""
+        base = slug(f"{date_iso} {name}") if name and date_iso else ""
+        out = []
+        for meet_id in self.list():
+            if base and re.fullmatch(re.escape(base) + r"(-\d+)?", meet_id):
+                out.append(meet_id)
+                continue
+            if milesplit_meet_id:
+                try:
+                    with open(self.path(meet_id), encoding="utf-8") as f:
+                        info = json.load(f).get("meet") or {}
+                except (OSError, ValueError):
+                    continue
+                if (info.get("milesplit") or {}).get("meet_id") == milesplit_meet_id:
+                    out.append(meet_id)
+        return out

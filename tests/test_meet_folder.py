@@ -115,7 +115,7 @@ class CloseIntoResultsFolder(MeetApiBase):
         self.assertTrue(self.get("/api/meet/close/plan").get_json()["resume"])
 
         # a new meet opened meanwhile is not closed into the old folder
-        self.import_fixture(name="Next XC", date="2026-10-17")
+        self.import_fixture(name="Next XC", date="2026-10-17", meet_id=761227)    # another MileSplit meet
         d = self.post("/api/meet/close")
         self.assertTrue(d["resumed"])
         self.assertEqual(self.svc.meet.meet.name, "Next XC")

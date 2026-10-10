@@ -68,10 +68,36 @@ class TestModel(unittest.TestCase):
 
     def test_new_ids_never_reuse(self):
         m = small_meet()
-        self.assertEqual(m.new_athlete_id(), "a4")
+        self.assertRegex(m.new_athlete_id(), r"^a4-[0-9a-f]{4}$")
         m.athletes.pop(0)
-        self.assertEqual(m.new_athlete_id(), "a4")
-        self.assertEqual(m.new_team_id(), "t3")
+        self.assertRegex(m.new_athlete_id(), r"^a4-[0-9a-f]{4}$")
+        self.assertRegex(m.new_team_id(), r"^t3-[0-9a-f]{4}$")
+
+    def test_new_ids_cant_collide_between_pcs(self):
+        """2026-10-10: two PCs adding an athlete each must not both make
+        "a4" for different runners (sync merges by id); the same MileSplit
+        runner added on both is one id."""
+        m = small_meet()
+        self.assertNotEqual(m.new_athlete_id(), m.new_athlete_id())
+        self.assertEqual(m.new_athlete_id(milesplit_id=777), "ms777")
+        self.assertEqual(m.new_team_id(milesplit_id=55), "tms55")
+        m.athletes.append(Athlete("ms777", "X", "Y", "F"))
+        self.assertRegex(m.new_athlete_id(milesplit_id=777), r"^a4-")      # taken: a random one
+        m.athletes.append(Athlete("a9-beef", "X", "Z", "F"))
+        self.assertRegex(m.new_athlete_id(), r"^a10-")
+
+    def test_create_stamps_an_origin(self):
+        with tempfile.TemporaryDirectory() as d:
+            s = MeetStore(d)
+            a, b = s.create("Same", "2026-10-08"), s.create("Same", "2026-10-08")
+            self.assertRegex(a.meet.origin, r"^[0-9a-f]{16}$")
+            self.assertNotEqual(a.meet.origin, b.meet.origin)
+            self.assertEqual(s.load(a.meet.id).meet.origin, a.meet.origin)
+            a.meet.milesplit.meet_id = 766577
+            s.save(a)
+            self.assertEqual(s.find(milesplit_meet_id=766577), [a.meet.id])
+            self.assertEqual(s.find(name="Same", date_iso="2026-10-08"), [a.meet.id, b.meet.id])
+            self.assertEqual(s.find(name="Other", date_iso="2026-10-08"), [])
 
     def test_round_trip(self):
         m = small_meet()

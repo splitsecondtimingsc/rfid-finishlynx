@@ -682,7 +682,11 @@ def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportRepo
     """
     src = _SOURCE_LABEL.get(pull.source, pull.source)
     rep = ImportReport(source=pull.source, notes=list(pull.notes))
-    prev_index = ({(t.key, a.key): a for t, a in previous.athletes()}
+    # The first import numbers ids a1, a2 ... (one PC, nothing shared yet);
+    # anything a refresh adds later gets an id no other PC can hand out for
+    # someone else (model notes, 2026-10-10).
+    first = not meet.athletes and not meet.teams
+    prev_index =({(t.key, a.key): a for t, a in previous.athletes()}
                   if previous is not None else {})
 
     # ---- teams
@@ -694,7 +698,8 @@ def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportRepo
         t = _find_team(meet, tr)
         if t is None:
             code = team_code(tr.abbrev, tr.name, meet.teams)
-            t = Team(id=meet.new_team_id(), name=tr.name,
+            t = Team(id=meet._next_id("t", meet.teams) if first else meet.new_team_id(tr.milesplit_id),
+                     name=tr.name,
                      short=short_name(tr.name, meet.teams, code), code=code,
                      milesplit_id=tr.milesplit_id, city=tr.city, state=tr.state)
             meet.teams.append(t)
@@ -788,7 +793,7 @@ def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportRepo
             claimed.add(cands[0].id)
 
     used_bibs = set(meet.used_bibs())
-    next_id = int(meet.new_athlete_id()[1:])
+    next_id = meet._next_num("a", meet.athletes)
 
     for i, (tr, ar) in enumerate(pairs):
         tid = team_map[tr.key]
@@ -799,7 +804,8 @@ def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportRepo
         a = matched.get(i)
 
         if a is None:                                    # ---- new athlete
-            a = Athlete(id=f"a{next_id}", first=ar.first, last=ar.last, gender=ar.gender,
+            aid = f"a{next_id}" if first else meet.new_athlete_id(ar.milesplit_id)
+            a = Athlete(id=aid, first=ar.first, last=ar.last, gender=ar.gender,
                         team_id=tid, grad_year=ar.grad_year, grade_text=ar.grade_text,
                         milesplit_id=ar.milesplit_id, universal_id=ar.universal_id,
                         source=pull.source, dob=ar.dob, roster_only=ar.roster_only)

@@ -4011,6 +4011,7 @@ class Application:
             self.meet_sync = None
         svc = self.meet_service
         svc.store.on_save = None
+        svc.meet_sync = None
         try:
             base = os.path.dirname(os.path.abspath(self.config.races.state_file or "races-state.json"))
             engines = engines_from_config(self.config, svc.root, base, store=ServiceStore(svc))
@@ -4036,6 +4037,7 @@ class Application:
         group = SyncGroup([(name, SyncRunner(sync, is_racing=racing, on_report=report))
                            for name, sync in engines])
         svc.store.on_save = group.notify_saved
+        svc.meet_sync = group                  # a round before imports / bib assigns (2026-10-10)
         group.start()
         self.meet_sync = group
         logger.info(f"Meet sync on: {' + '.join(s.transport.name for _, s in engines)} as {engines[0][1].machine}")

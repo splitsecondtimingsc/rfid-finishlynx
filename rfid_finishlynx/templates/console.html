@@ -4088,7 +4088,7 @@ async function meetNew() {
   const name = gv('nm-name').trim(), date = gv('nm-date');
   if (!name) { meetMsg('Give the meet a name', false); return; }
   const r = await meetApi('/api/meet/new', { name, date, host: gv('nm-host').trim(), location: gv('nm-loc').trim(), kind: gv('nm-kind') });
-  if (!r.ok) { meetMsg(r.data.error, false); return; }
+  if (!r.ok) { alreadyHere(r); meetMsg(r.data.error, false); return; }
   applyMeet(r.data.meet || r.data);
   meetGo('info');
 }
@@ -4137,7 +4137,17 @@ async function meetImportAny(fileId, rosterId) {
   if (json[1] && roster) body.rosters = json[1];
   importDone(await meetApi(MEET.active ? '/api/meet/refresh' : '/api/meet/import/milesplit', body));
 }
+/* A meet already on this PC is never imported twice: its bibs would be
+   numbered again (2026-10-10). Offer the one that's here instead. */
+function alreadyHere(r) {
+  if (!r.data || !r.data.existing) return false;
+  dlg(`<h3>Already on this PC</h3><div class="body" style="max-width:520px">${esc(r.data.error)}</div>
+    <div class="foot"><button class="btn" onclick="closeDlg()">Cancel</button>
+      <button class="btn primary" onclick='closeDlg();meetOpenGo(${JSON.stringify({ id: r.data.existing })})'>Open ${esc(r.data.existing_name || r.data.existing)}</button></div>`);
+  return true;
+}
 function importDone(r) {
+  if (!r.ok && alreadyHere(r)) { meetMsg(r.data.error, false); return; }
   if (!r.ok) { meetMsg(r.data.error, false); if (r.data.report) showImportReport(r.data.report); return; }
   meetMsg('Imported', true);
   showImportReport(r.data.report);
@@ -4458,6 +4468,10 @@ function syncMoved(x) {
 function syncClashCount() { return Object.values((SYNC && SYNC.conflicts) || {}).reduce((a, n) => a + n, 0); }
 function syncLineHtml() {
   if (!SYNC || !SYNC.enabled) return '';
+  // another PC's separate import, or one bib on two athletes: before anything else (2026-10-10)
+  const sep = Object.keys(SYNC.separate || {}).length, dups = Object.values(SYNC.bib_dups || {}).reduce((a, b) => a + b.length, 0);
+  if (sep) return `<span style="color:var(--bad);font-weight:600">Another PC imported this meet separately: bibs differ · see Sharing</span>`;
+  if (dups) return `<span style="color:var(--bad);font-weight:600">${dups} bib${dups === 1 ? '' : 's'} on two athletes after sync · see Sharing</span>`;
   const n = syncClashCount();
   if (n) return `<span style="color:var(--warn)">${n} sync clash${n === 1 ? '' : 'es'} to check</span>`;
   if (SYNC.last_error) return `<span style="color:var(--warn)" title="${esc(SYNC.last_error)}">Sync offline</span>`;
@@ -4512,6 +4526,7 @@ function syncPanelHtml() {
         <span id="sy-msg" class="msg-line"></span></div>
       ${(onFolder && !folderOk) || (!gitOk && !onFolder) ? '<div class="hint" style="margin:0">Install Google Drive for desktop on each PC and pick the same folder in My Drive on all of them. Each PC writes only its own file per meet; edits to different athletes or races on different PCs all come through.</div>' : ''}
       ${onGit && onFolder ? '<div class="hint" style="margin:0">Both on: every meet goes to each place, so either one is a backup of the other.</div>' : ''}
+      ${syncSeparateHtml(S, onGit && onFolder)}
       ${clashes.length ? `<div><div class="lbl" style="margin-bottom:6px;color:var(--warn)">Changed on two PCs (${clashes.length}): ours was kept</div>
         <table style="font-size:12px"><tr><th>Meet</th><th>What</th><th>Here</th><th>Other PC</th><th></th></tr>
         ${clashes.map(c => `<tr><td>${esc(c.meet)}</td><td class="num">${esc(c.path.replace(/^meet\./, ''))}</td>
@@ -4519,6 +4534,34 @@ function syncPanelHtml() {
           <td class="right" style="white-space:nowrap"><button class="btn small" onclick="syncResolve('${esc(c.meet)}', ${c.index}, 'theirs', '${esc(c.target || '')}')">Take theirs</button>
             <button class="btn small" onclick="syncResolve('${esc(c.meet)}', ${c.index}, 'mine', '${esc(c.target || '')}')">Keep mine</button></td></tr>`).join('')}</table></div>` : ''}
     </div>`;
+}
+/* Separate imports (2026-10-10): the same meet imported from MileSplit on two
+   PCs gets its bibs numbered twice, differently. Sync never merges such
+   copies: the operator keeps one, on every PC. Plus bibs a merge left on two
+   athletes (two PCs handing out the same next number while apart). */
+function syncSeparateHtml(S, both) {
+  const sep = S.separate_copies || [], dups = S.bib_dup_list || [];
+  const via = x => both ? ' via ' + (x.target === 'git' ? 'NAS' : 'folder') : '';
+  const open = sep.filter(x => !x.kept), kept = sep.filter(x => x.kept);
+  return (open.length ? `<div style="border:1px solid var(--bad);border-radius:6px;padding:8px 10px">
+      <div class="lbl" style="margin-bottom:6px;color:var(--bad)">Imported separately on another PC: not merged</div>
+      <div style="margin-bottom:6px">The same meet was imported from MileSplit on two PCs, so its bibs were numbered twice. Keep the copy whose bibs were <b>printed and handed out</b>, and do the same on every PC. The copy you don't keep is saved on this PC, not deleted.</div>
+      <table style="font-size:12px"><tr><th>Meet</th><th>Other PC</th><th>Differences</th><th></th></tr>
+      ${open.map(x => `<tr><td>${esc(x.name || x.meet)}</td><td>${esc(x.machine)}${via(x)}</td>
+        <td>${x.why === 'origin' ? 'a separate import · ' : ''}${x.bib_diffs} runner${x.bib_diffs === 1 ? '' : 's'} with another bib${x.other_runner ? `, ${x.other_runner} id${x.other_runner === 1 ? '' : 's'} for another runner` : ''}
+          ${(x.examples || []).length ? `<div style="color:var(--ink-3)">${x.examples.map(e => `${esc(e.name)}: ${esc(e.mine)} here, ${esc(e.theirs)} there`).join(' · ')}</div>` : ''}</td>
+        <td class="right" style="white-space:nowrap"><button class="btn small" onclick="syncSeparate('${esc(x.meet)}', '${esc(x.machine)}', 'theirs', '${esc(x.target || '')}')">Use theirs</button>
+          <button class="btn small" onclick="syncSeparate('${esc(x.meet)}', '${esc(x.machine)}', 'mine', '${esc(x.target || '')}')">Keep mine</button></td></tr>`).join('')}</table></div>` : '')
+    + (kept.length ? `<div style="color:var(--ink-3)">Kept this PC's copy over ${kept.map(x => `${esc(x.machine)}'s ${esc(x.name || x.meet)}`).join(', ')}: on ${kept.length === 1 ? 'that PC' : 'those PCs'}, pick "Use theirs".</div>` : '')
+    + (dups.length ? `<div><div class="lbl" style="margin-bottom:6px;color:var(--bad)">One bib on two athletes after sync: renumber one of them (Athletes)</div>
+      ${dups.map(x => `<div>${esc(x.meet)} · bib <b>${esc(x.bib)}</b>: ${(x.names || []).map(esc).join(' and ')} <span style="color:var(--ink-3)">(after ${esc(x.machine || '')}'s changes)</span></div>`).join('')}</div>` : '');
+}
+async function syncSeparate(meet, machine, take, target) {
+  if (take === 'theirs' && !confirm(`Replace this PC's copy of ${meet} with ${machine}'s? Use it only if ${machine}'s bibs are the ones handed out. This PC's copy is saved, not deleted.`)) return;
+  const r = await meetApi(`/api/meet/sync/separate/${encodeURIComponent(meet)}`, target ? { machine, take, target } : { machine, take });
+  if (!r.ok) { syncMsg(r.data.error, false); return; }
+  SYNC = r.data.sync; syncRender();
+  syncMsg(take === 'theirs' ? `Now using ${machine}'s copy` : `Keeping this PC's copy: on ${machine}, pick "Use theirs"`, true);
 }
 async function syncBrowse(inputId) {
   const r = await osPick({ mode: 'dir', path: gv(inputId), title: inputId === 'sy-remote' ? 'NAS meets folder' : 'Shared meets folder' });
