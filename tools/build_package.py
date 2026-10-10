@@ -8,7 +8,8 @@ rfid_finishlynx\\, with INSTALL.bat at its top: the committed tree at --ref
 are marked export-ignore in .gitattributes), plus
     VERSION.txt       commit, date
     QUICK-START.pdf   QUICK-START.html printed by Edge (if Edge is there)
-    support.key       the Send-logs key, copied from support.key next to this
+    support.key       the Send-logs key, copied from private/support.key (kept in
+                      the private repo, export-ignore) or a support.key next to this
                       repo (git-ignored; never published - see support.py)
     EDITION.json      the edition's entry from tools/editions.json (2026-10-07):
                       what INSTALL.bat sets meet sharing to ("public" = a
@@ -94,12 +95,17 @@ def main(argv=None) -> int:
                                           f"built {datetime.now():%Y-%m-%d %H:%M}\n".encode(),
                   PREFIX + "EDITION.json": json.dumps(edition, indent=1).encode()}
         # The Send-logs key (support.py): in the zip, never in git
-        key_file = os.path.join(ROOT, "support.key")
+        # private/support.key travels with the private repo (2026-10-10: in
+        # every package, whichever PC builds it); a support.key at the root
+        # still wins, to try another key
+        key_file = next((p for p in (os.path.join(ROOT, "support.key"),
+                                     os.path.join(ROOT, "private", "support.key")) if os.path.isfile(p)),
+                        os.path.join(ROOT, "private", "support.key"))
         if os.path.isfile(key_file):
             with open(key_file, "rb") as f:
                 extras[PREFIX + "support.key"] = f.read().strip() + b"\n"
         else:
-            print("NOTE: no support.key next to the repo - Send logs needs a key pasted on that PC")
+            print("NOTE: no private/support.key in the repo - Send logs needs a key pasted on that PC")
         with zipfile.ZipFile(raw) as z:
             names = z.namelist()
             if PREFIX + "QUICK-START.html" in names:
