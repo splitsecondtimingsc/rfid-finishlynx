@@ -204,6 +204,7 @@ class TestScoringApi(unittest.TestCase):
     def setUp(self):
         self.m = mgr()
         self.k = self.m.create_race("Girls", event=3, gender="F")
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.m, offer_recent_starts=lambda k: None)
         self.c = web.app.test_client()
 

@@ -126,6 +126,7 @@ class TestImportLif(unittest.TestCase):
     def test_finish_time_api(self):
         from types import SimpleNamespace
         from rfid_finishlynx import web
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.m)
         c = web.app.test_client()
         r = c.post(f"/api/races/{self.key}/finish_time", json={"bib": "102", "time": "20:59.5"})
@@ -159,6 +160,7 @@ class TestImportLif(unittest.TestCase):
     def test_revert_api(self):
         from types import SimpleNamespace
         from rfid_finishlynx import web
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.m)
         c = web.app.test_client()
         c.post(f"/api/races/{self.key}/finish_time", json={"bib": "102", "time": "20:50"})

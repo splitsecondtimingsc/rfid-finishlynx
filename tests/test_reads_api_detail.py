@@ -16,6 +16,7 @@ READS = [
 class TestReadsDetail(unittest.TestCase):
 
     def setUp(self):
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(get_reads=lambda: [dict(r) for r in READS])
         with web._athlete_lock:
             self._saved = web._athlete_data['by_bib']

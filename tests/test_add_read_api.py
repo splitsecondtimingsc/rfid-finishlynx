@@ -19,6 +19,7 @@ class TestAddReadApi(unittest.TestCase):
         self.mgr = RaceManager(on_change=lambda k: None, finish_readers={"FINISH"},
                                point_distances={"S1": 1609, "S2": 3218})
         self.key = self.mgr.create_race("Girls", event=2, gender="F", distance="5000")
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.mgr, offer_recent_starts=lambda k: None)
         self.c = web.app.test_client()
 

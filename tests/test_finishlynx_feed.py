@@ -196,6 +196,7 @@ class TestRestoredRead(unittest.TestCase):
             def assign_read(self, read_id, race_key):
                 calls.append((read_id, race_key))
 
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(config=Config(), race_manager=Mgr(),
                                            send_restored_read=lambda rid: f"sent {rid}")
         c = web.app.test_client()
@@ -209,6 +210,7 @@ class TestConfigApi(unittest.TestCase):
 
     def test_round_trip(self):
         cfg = Config()
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(config=cfg, race_manager=None, save_config=lambda: None,
                                            is_running=False, finishlynx=None)
         c = web.app.test_client()

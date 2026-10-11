@@ -385,6 +385,7 @@ class TestMissingSplitReview(unittest.TestCase):
         self.assertEqual(out["added"], [("202", "S1")])
 
     def test_api_estimate_missing(self):
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.m, offer_recent_starts=lambda k: None)
         c = web.app.test_client()
         r = c.post(f"/api/races/{self.race}/estimate_missing", data="{}", content_type="application/json")
@@ -418,6 +419,7 @@ class TestConfigApi(unittest.TestCase):
         self.mgr = mgr(reader_points={})
         self.cfg = Config()
         self.saved = []
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(config=self.cfg, race_manager=self.mgr,
                                            save_config=lambda: self.saved.append(1),
                                            is_running=False, finishlynx=None)

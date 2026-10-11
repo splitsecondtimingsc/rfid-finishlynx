@@ -214,6 +214,7 @@ class TestFinishLynxFeed(unittest.TestCase):
 class TestApi(Base):
 
     def test_post_crossings(self):
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.m)
         c = web.app.test_client()
         r = c.post(f"/api/races/{self.k}/crossings", json={"crossings": {"FINISH": {"before": 1, "after": 2}}})
@@ -281,6 +282,7 @@ class TestFixingARunner(Base):
         self.assertEqual(self.finish("101"), 23 * 60)
 
     def test_api(self):
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.m)
         c = web.app.test_client()
         r = c.get(f"/api/races/{self.k}/athlete/101/reads")
@@ -301,6 +303,7 @@ class TestFixingARunner(Base):
         self.assertEqual(self.finish("101"), 1800.0)
 
     def test_film_offset_is_allowed_for(self):
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=self.m)
         self.m.set_film_offset(manual=0.5)
         c = web.app.test_client()

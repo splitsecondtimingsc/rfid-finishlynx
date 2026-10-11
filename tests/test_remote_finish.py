@@ -246,6 +246,7 @@ class TestConfigApi(unittest.TestCase):
     def setUp(self):
         self.cfg = Config()
         self.mgr = mgr(reader_points={})
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(config=self.cfg, race_manager=self.mgr, save_config=lambda: None,
                                            is_running=False, finishlynx=None)
         self.c = web.app.test_client()
@@ -365,6 +366,7 @@ class TestReaderNotInUse(unittest.TestCase):
     def test_config_api(self):
         cfg = Config()
         mgr_ = mgr(reader_points={})
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(config=cfg, race_manager=mgr_, save_config=lambda: None,
                                            is_running=False, finishlynx=None)
         c = web.app.test_client()

@@ -191,6 +191,7 @@ class TestPublishingSwitch(unittest.TestCase):
 
     def test_api(self):
         calls = []
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(
             set_publishing=lambda on, flush=False: calls.append((on, flush)) or {"publishing": on, "sent": 0, "kept_back": 0})
         c = web.app.test_client()
@@ -278,6 +279,7 @@ class TestWaive(unittest.TestCase):
     def test_api(self):
         mgr = make_mgr()
         k = self._race_with_gap(mgr)
+        self.addCleanup(setattr, web, "_application", web._application)
         web._application = SimpleNamespace(race_manager=mgr, config=Config())
         c = web.app.test_client()
         r = c.post(f"/api/races/{k}/waive", data=json.dumps({"bib": "102"}), content_type="application/json")
