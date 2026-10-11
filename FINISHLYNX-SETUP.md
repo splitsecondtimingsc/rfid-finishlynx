@@ -67,9 +67,9 @@ event/heat. Start the clock — a gun candidate appears in the race pane's
 
 ## 2b. Start gun straight from the camera (no FinishLynx dependency)
 
-The start sensor plugs into the EtherLynx camera, and the camera reports
-each firing inside the status reply it sends FinishLynx roughly six times a
-second (Kirk command channel, camera UDP port 41925). The middleware sniffs
+The start sensor (wired, or a RadioLynx transmitter) reports to the
+EtherLynx camera, and the camera reports each firing inside the status
+reply it sends FinishLynx roughly six times a second (Kirk command channel, camera UDP port 41925). The middleware sniffs
 those replies with **tshark** (Wireshark + Npcap; no admin needed) and gets
 the start time from the camera's own 10 kHz clock - a few ms accuracy,
 regardless of whether FinishLynx accepted the start.
@@ -77,9 +77,17 @@ regardless of whether FinishLynx accepted the start.
 - Requirements: Wireshark installed on this PC, camera NIC on the camera's
   subnet (auto-detected; override `camera_start.interface` with the
   `\Device\NPF_{...}` GUID or the adapter name if needed).
+- Camera IP: leave it on `auto` (blank in the console). FinishLynx gives
+  the camera this PC's camera-NIC address + 1 (.67 next to a PC at .66),
+  so the sniffer listens for any camera and follows the first one that
+  answers; the popover's **Camera** line and the Setup check show the
+  address it found. Set an address only to pick one of two cameras.
+  `192.168.0.201`, the old default every earlier `config.yaml` carries,
+  counts as `auto`.
 - Config block (`config.yaml`): `camera_start: {enabled, camera_host,
-  camera_port, interface, tshark_path}`. Defaults match this rig
-  (192.168.0.201:41925).
+  camera_port, interface, tshark_path}`. Defaults: `auto`, port 41925.
+- Which inputs count: the wired start sensor and RadioLynx start impulses
+  are guns; photo-eyes and RadioLynx transmitter status messages are not.
 - Console: the **Camera start** chip is green while it hears the camera's
   replies, amber if tshark runs but no replies arrive (FinishLynx not
   polling the camera - is it booted?), red if tshark is missing. The chip

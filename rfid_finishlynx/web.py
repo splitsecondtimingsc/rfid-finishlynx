@@ -2632,8 +2632,10 @@ def api_camera_start_restart():
     changed = False
     if 'enabled' in d:
         cs.enabled = bool(d['enabled']); changed = True
-    if d.get('camera_host'):
-        cs.camera_host = str(d['camera_host']).strip(); changed = True
+    if 'camera_host' in d:
+        # blank (or auto) = find the camera from its replies (2026-10-11)
+        from .camera_start import normalize_camera_host
+        cs.camera_host = normalize_camera_host(d['camera_host']); changed = True
     if 'interface' in d:
         cs.interface = str(d['interface']).strip() or 'auto'; changed = True
     if changed:

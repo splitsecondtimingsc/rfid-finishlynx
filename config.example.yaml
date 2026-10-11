@@ -1,5 +1,5 @@
 camera_start:
-  camera_host: 192.168.0.201
+  camera_host: auto
   camera_port: 41925
   enabled: true
   interface: auto

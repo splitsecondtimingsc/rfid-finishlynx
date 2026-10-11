@@ -7,6 +7,8 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from .camera_start import normalize_camera_host
+
 
 def parse_antennas(value) -> List[int]:
     """reader.antennas from YAML/API/radio: a list of port numbers, or
@@ -193,7 +195,10 @@ class CameraStartConfig:
     """Start-gun signal sniffed from the EtherLynx camera's status replies
     (see camera_start.py). Needs Wireshark/Npcap on the FinishLynx PC."""
     enabled: bool = True
-    camera_host: str = "192.168.0.201"
+    # auto: any camera, learned from its first status reply - FinishLynx
+    # gives the camera its NIC's address + 1, so no fixed default fits every
+    # PC. The old default 192.168.0.201 also reads as auto (2026-10-11).
+    camera_host: str = "auto"
     camera_port: int = 41925
     interface: str = "auto"      # capture device/GUID/alias; auto = NIC on the camera subnet
     tshark_path: str = "auto"
@@ -353,7 +358,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
             cs = data["camera_start"]
             config.camera_start = CameraStartConfig(
                 enabled=bool(cs.get("enabled", config.camera_start.enabled)),
-                camera_host=str(cs.get("camera_host", config.camera_start.camera_host)),
+                camera_host=normalize_camera_host(cs.get("camera_host", config.camera_start.camera_host)),
                 camera_port=int(cs.get("camera_port", config.camera_start.camera_port)),
                 interface=str(cs.get("interface", config.camera_start.interface)),
                 tshark_path=str(cs.get("tshark_path", config.camera_start.tshark_path)),

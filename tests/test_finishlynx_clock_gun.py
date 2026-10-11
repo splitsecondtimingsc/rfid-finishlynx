@@ -142,6 +142,14 @@ class TestCameraStart(unittest.TestCase):
         a._on_camera_event(self._event(0x1140, gun))
         self.assertEqual(a._current_gun_with_source(), (gun, "camera"))   # camera beats FinishLynx clock
 
+    def test_wired_start_drives_clocks(self):
+        # word 5 == 1 (wired start sensor) was invisible until 2026-10-11
+        a = bare_app()
+        a._handle_running_time(500.0)
+        gun = datetime.now()
+        a._on_camera_event(self._event(1, gun))
+        self.assertEqual(a._current_gun_with_source(), (gun, "camera"))
+
     def test_other_input_code_ignored(self):
         a = bare_app()
         a._camera_gun = None

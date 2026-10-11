@@ -640,7 +640,7 @@ function renderFlChip(s) {
     (ow ? `Open in FinishLynx: ${ow.name} (${ow.event}-${ow.round}-${ow.heat}) - finish reads for other races stay out of it\n` : '') +
     `LapTime link: ${s.finishlynx_connected ? 'connected' : 'down'}\n` +
     `Scoreboard feed: ${sbOk ? 'receiving' : s.scoreboard_listener_active ? 'nothing yet' : 'listener off'}` +
-    (camOn ? `\nCamera start: ${cs.receiving ? 'hearing the camera' : cs.running ? 'no camera replies' : 'not running'}` : '');
+    (camOn ? `\nCamera start: ${cs.receiving ? 'hearing the camera' + (cs.camera_ip ? ' at ' + cs.camera_ip : '') : cs.running ? 'no camera replies' : 'not running'}` : '');
 }
 /* Stations chip: one short code per reader in use - "M1", "M2", "F" from
    where it stands (Stations popover) - each with a dot. Green while the
@@ -1102,7 +1102,7 @@ const POP_ROWS = {
       ['Last reply', c.last_reply_age_sec != null ? c.last_reply_age_sec + ' s ago' : '—'],
       ['Starts heard', c.starts != null ? c.starts : '—'],
       ['Last start', c.last_start ? esc(c.last_start.slice(11, 23)) : '—'],
-      ['Last input event', ev ? `${esc(ev.code)} at ${esc(ev.wall.slice(11, 23))}${ev.is_start ? '' : ' (not the start sensor)'}` : '—'],
+      ['Last input event', ev ? `${esc(ev.kind ? ev.kind + ' ' + ev.code : ev.code)} at ${esc(ev.wall.slice(11, 23))}${ev.is_start ? '' : ' (not a start)'}` : '—'],
       ['Error', c.error ? `<span style="color:var(--crit)">${esc(c.error)}</span>` : '—'],
     ];
   },
@@ -1263,10 +1263,10 @@ function buildPop() {
         `In FinishLynx: File → Options → Scoreboard → entry "Middleware": script Example2.lss, Network UDP to 127.0.0.1:${esc(sb.port)}, running time on, results if armed on.`) +
       popSec('Start sensor via camera',
         `<label class="inl"><input type="checkbox" id="p-cen" ${cc.enabled ? 'checked' : ''}> enabled</label>
-         <label class="inl">Camera IP <input class="mid" id="p-chost" value="${esc(cc.camera_host)}"></label>
+         <label class="inl">Camera IP <input class="mid" id="p-chost" value="${esc(cc.camera_host === 'auto' ? '' : cc.camera_host)}" placeholder="auto"></label>
          <label class="inl">Interface <input class="mid" id="p-cif" value="${esc(cc.interface)}" placeholder="auto"></label>
          <button class="btn primary" onclick="applyCam()">Apply &amp; restart</button>`,
-        'Reads the start-sensor record out of the camera\'s status replies to FinishLynx using tshark (Wireshark/Npcap). Each start lands in the waiting race pane and drives the LED clocks, whether or not FinishLynx accepts it.') +
+        'Reads the start-sensor record (wired start sensor or RadioLynx) out of the camera\'s status replies to FinishLynx using tshark (Wireshark/Npcap). Each start lands in the waiting race pane and drives the LED clocks, whether or not FinishLynx accepts it. Leave Camera IP blank (auto): the camera is found from its replies - FinishLynx gives it this PC\'s address + 1. Fill it in only to pick one of two cameras.') +
       (s.film_offset ? popSec('Film offset (mat → photo finish)', filmControlsHtml(s.film_offset),
         'As you evaluate finishes on the film and FinishLynx saves the event, each athlete\'s exact time is compared with the mat read. Each race learns its own rolling average difference over 20 evaluated finishes, so it follows the field as finishers slow down (positive = the chip crossed the mat after the torso crossed the line) and subtracts it from that race\'s mat finishes shown here, exported, and sent to FinishLynx from then on, so unevaluated athletes get film-like times. A new race starts at 0 until its first evaluations are saved. Hand-entered finishes are never adjusted. Rows FinishLynx merely copied from us are recognised and ignored. Everything here clears when the meet is closed.') : ''));
     }

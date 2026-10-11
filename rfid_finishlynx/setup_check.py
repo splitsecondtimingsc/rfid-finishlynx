@@ -310,7 +310,9 @@ def run(app) -> List[Dict]:
                          bool(tshark), tshark or "not installed",
                          "Install Wireshark from wireshark.org (tick Npcap). Without it, set guns by hand."))
         cam = status.get("camera_start") or {}
-        rows.append(_row("Camera start", "camera_seen", f"Hearing the camera ({cfg.camera_start.camera_host})",
+        # camera_host auto: show the address learned from the replies (2026-10-11)
+        host = cam.get("camera_ip") or cfg.camera_start.camera_host
+        rows.append(_row("Camera start", "camera_seen", f"Hearing the camera ({host})",
                          True if cam.get("receiving") else (None if not tshark else False),
                          f"{cam.get('replies', 0)} replies" if cam.get("receiving") else (cam.get("error") or "nothing heard"),
                          "FinishLynx open with the camera connected, and this PC on the camera's network."))

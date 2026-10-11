@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from . import __version__
-from .camera_start import START_CODE, CameraStartListener
+from .camera_start import CameraStartListener
 from .config import Config
 from .finishlynx import FinishLynxOutput, ScoreboardListener
 from .hw_guard import HardwareLock, preview_requested
@@ -2989,11 +2989,14 @@ class Application:
 
     def _on_camera_event(self, ev):
         """Camera input event from the sniffer (reader thread)."""
-        if ev.code != START_CODE:
-            logger.info(f"camera input 0x{ev.code:04x} at {ev.wall.strftime('%H:%M:%S.%f')[:-3]} (not the start sensor)")
+        if not ev.is_start:
+            # wired start sensor and RadioLynx start impulses are guns; photo-
+            # eyes and RadioLynx status messages are not (2026-10-11)
+            logger.debug(f"camera input 0x{ev.code:04x} ({ev.kind}) at "
+                         f"{ev.wall.strftime('%H:%M:%S.%f')[:-3]} - not a start")
             return
         gun = ev.wall
-        logger.info(f"GUN from camera at {gun.strftime('%H:%M:%S.%f')[:-3]}")
+        logger.info(f"GUN from camera ({ev.kind}) at {gun.strftime('%H:%M:%S.%f')[:-3]}")
         self._note_start(gun, "camera start")
         self._route_start(gun, "camera start")
         # Also remembered as the LED clocks' gun until a pane takes over.
