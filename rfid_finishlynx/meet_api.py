@@ -316,9 +316,11 @@ def import_file():
     if f is None or not f.filename:
         raise MeetError("no file uploaded (multipart field 'file')", 400)
     flag = str(request.form.get("include_roster_only", "")).lower() in ("1", "true", "on", "yes")
+    fb = str(request.form.get("file_bibs", "")).lower()       # absent = automatic
+    file_bibs = True if fb in ("1", "true", "on", "yes") else False if fb in ("0", "false", "off", "no") else None
     report, summary = _svc().import_file(f.read(), f.filename, flag,
                                          name=request.form.get("name", ""),
-                                         day=request.form.get("date", ""))
+                                         day=request.form.get("date", ""), file_bibs=file_bibs)
     return _ok(report=report, meet=summary)
 
 

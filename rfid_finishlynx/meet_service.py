@@ -1219,10 +1219,12 @@ class MeetService:
             self._pulls["rosters"] = rosters
 
     def import_file(self, data: bytes, filename: str, include_roster_only: bool = False, *,
-                    name: str = "", day: str = "") -> Tuple[dict, dict]:
+                    name: str = "", day: str = "",
+                    file_bibs: Optional[bool] = None) -> Tuple[dict, dict]:
         """Hy-Tek semicolon (.txt) or plain .csv: a new meet when none is
         active, else merged into the active one (no previous pull: identity
-        by name within a team)."""
+        by name within a team). file_bibs: take the file's bib numbers
+        (importers.merge; None = only while the meet has no bibs yet)."""
         is_csv = filename.lower().endswith(".csv")
         try:
             pull = importers.parse_csv(data) if is_csv else importers.parse_hytek(data, include_roster_only)
@@ -1247,7 +1249,7 @@ class MeetService:
             return report.to_dict(), summary
 
         def change(meet: Meet):
-            rep = importers.merge(meet, pull)
+            rep = importers.merge(meet, pull, file_bibs=file_bibs)
             if self._pulls:
                 idmatch.match_meet(meet, self._pool(meet))
             return rep

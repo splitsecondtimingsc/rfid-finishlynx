@@ -195,6 +195,50 @@ class TestImport(MeetApiBase):
         self.assertEqual(r.status_code, 200, r.get_json())
         self.assertEqual(r.get_json()["meet"]["counts"]["athletes"], 1)
 
+    def late_team_file(self, **form):
+        """A team added after bibs went out, from its coach's Team Manager
+        file: Comp#s are TM's own numbers in database order."""
+        from io import BytesIO
+        held = {int(a.bib) for a in self.svc.meet.athletes if a.bib}
+        free = max(held) + 50
+        rows = [("Young", "Zed", "M", free), ("Adams", "Abe", "M", min(held)),
+                ("Moss", "Mia", "F", free + 7), ("Baker", "Bo", "M", free + 3),
+                ("Cole", "Cy", "F", max(held))]
+        text = "".join(f"D;{l};{f};;{g};;LAT;Late High;;11;5000;;M;;{c};;;;;\r\n"
+                       for l, f, g, c in rows)
+        r = self.c.post("/api/meet/import/file",
+                        data={"file": (BytesIO(text.encode()), "late.txt"), **form},
+                        content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.get_json())
+        return free
+
+    def late_team(self):
+        tid = next(t.id for t in self.svc.meet.teams if t.name == "Late High")
+        return [a for a in self.svc.meet.athletes if a.team_id == tid]
+
+    def test_team_added_from_a_file_gets_bibs_in_order(self):
+        # 2026-10-12, a public-edition timer: the late team's bibs came out
+        # jumbled (Comp#s kept where free, Assign fitting the rest around them)
+        self.import_fixture()
+        self.assign_all()
+        self.late_team_file()
+        self.assertEqual([a.bib for a in self.late_team()], [""] * 5)
+        self.post("/api/meet/bibs/assign", {"rows": [["100", ""]], "sort": ["team", "gender", "last"],
+                                            "retain": True, "dry_run": False})
+        by_bib = sorted(self.late_team(), key=lambda a: int(a.bib))
+        self.assertEqual([(a.gender, a.last) for a in by_bib],
+                         [("M", "Adams"), ("M", "Baker"), ("M", "Young"), ("F", "Cole"), ("F", "Moss")])
+        nums = [int(a.bib) for a in by_bib]
+        self.assertEqual(nums, list(range(nums[0], nums[0] + 5)))
+
+    def test_team_added_from_a_file_with_its_bibs(self):
+        self.import_fixture()
+        self.assign_all()
+        free = self.late_team_file(file_bibs="1")
+        self.assertEqual({a.last: a.bib for a in self.late_team()},
+                         {"Young": str(free), "Adams": "", "Moss": str(free + 7),
+                          "Baker": str(free + 3), "Cole": ""})
+
 
 # --------------------------------------------------------------- athletes + bibs
 

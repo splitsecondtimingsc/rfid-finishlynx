@@ -76,7 +76,7 @@ wearer popover, C2 results drawer, D printouts). Plan: MEET-MANAGEMENT-PLAN.md.
 ## Import / refresh
 
 | POST | /api/meet/import/milesplit | `{entries: <json>, rosters?: <json>}` or `{fetch: true, tc_id, meet_id, full_rosters: bool}` | `{report: ImportReport}` + summary; creates + activates when no meet is active, else refreshes (3-way with stored pulls) |
-| POST | /api/meet/import/file | multipart `file` (Hy-Tek .txt / .csv), `include_roster_only` | same |
+| POST | /api/meet/import/file | multipart `file` (Hy-Tek .txt / .csv), `include_roster_only`, `file_bibs` (1 = the file's Comp#/bib numbers become bibs, 0 = they don't; absent = only while nobody in the meet has a bib yet) | same |
 | POST | /api/meet/refresh | `{fetch: true}` or uploaded JSON | `{report}` + summary |
 
 ## MileSplit

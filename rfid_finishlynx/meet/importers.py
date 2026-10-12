@@ -669,8 +669,17 @@ def _find_team(meet: Meet, tr: TeamRec) -> Optional[Team]:
 _IDENTITY = ("first", "last", "gender", "grad_year", "grade_text", "universal_id", "dob")
 
 
-def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportReport:
+def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None,
+          file_bibs: Optional[bool] = None) -> ImportReport:
     """Merge `pull` into `meet` in place and report what happened.
+
+    file_bibs: whether a Hy-Tek Comp# / CSV bib column becomes the bib.
+    None (the default) = only while nobody in the meet holds a bib yet: a
+    file into a meet that already has its numbers leaves them blank for
+    the bib dialog. 2026-10-12, a public-edition timer: a team added later
+    from a Team Manager file kept the Comp#s that were free, got blanks for
+    the ones that clashed, and Assign then fitted the rest around them, so
+    the team's bibs came out in no order (not team, gender, name).
 
     Match teams by MileSplit id (else code, else name); athletes by
     (MileSplit id, team), falling back to the MileSplit id alone when the
@@ -793,6 +802,13 @@ def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportRepo
             claimed.add(cands[0].id)
 
     used_bibs = set(meet.used_bibs())
+    if file_bibs is None:
+        file_bibs = not used_bibs
+    if not file_bibs:
+        unused = sum(1 for _, ar in pairs if ar.bib)
+        if unused:
+            rep.notes.append(f"{unused} bib numbers in the {src} were not used (this meet "
+                             "already has bibs): number the new athletes in the bib dialog")
     next_id = meet._next_num("a", meet.athletes)
 
     for i, (tr, ar) in enumerate(pairs):
@@ -810,7 +826,7 @@ def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportRepo
                         milesplit_id=ar.milesplit_id, universal_id=ar.universal_id,
                         source=pull.source, dob=ar.dob, roster_only=ar.roster_only)
             next_id += 1
-            if ar.bib:
+            if ar.bib and file_bibs:
                 if ar.bib in used_bibs:
                     rep.notes.append(f"{label(a)}: bib {ar.bib} already used, left blank")
                 else:
@@ -849,7 +865,7 @@ def merge(meet: Meet, pull: Pull, previous: Optional[Pull] = None) -> ImportRepo
             setattr(a, f, new)
             rep.changed.append(Change("athlete", f"{label(a)}: {f} {cur!r} -> {new!r}",
                                       athlete_id=a.id))
-        if ar.bib and not a.bib and ar.bib not in used_bibs:
+        if file_bibs and ar.bib and not a.bib and ar.bib not in used_bibs:
             a.bib = ar.bib
             used_bibs.add(ar.bib)
             rep.changed.append(Change("athlete", f"{label(a)}: bib {ar.bib}", athlete_id=a.id))

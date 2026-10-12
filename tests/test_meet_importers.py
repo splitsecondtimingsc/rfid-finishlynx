@@ -463,8 +463,48 @@ class TestHytek(unittest.TestCase):
                          ["Emery Fairley (unattached) is not in the Hy-Tek file (kept, 1 entry)"])
         self.assertEqual(rep.added, [])
 
+    # A team added later from a Team Manager file (2026-10-12): its Comp#s
+    # must not become bibs in a meet that already has its numbers.
+    LATE = ("D;Young;Zed;;M;;LAT;Late High;;11;5000;;M;;150;;;;;\n"
+            "D;Adams;Abe;;M;;LAT;Late High;;11;5000;;M;;101;;;;;\n"
+            "D;Moss;Mia;;F;;LAT;Late High;;10;5000;;M;;160;;;;;\n")
 
-CSV_TEXT = """\
+    def test_late_file_into_numbered_meet_leaves_bibs_blank(self):
+        from rfid_finishlynx.meet.importers import merge
+        m, _ = import_hytek(HYTEK, info())                      # Birch 101, Elwood 102
+        rep = merge(m, parse_hytek(self.LATE))
+        late = [a for a in m.athletes if a.last in ("Young", "Adams", "Moss")]
+        self.assertEqual([a.bib for a in late], ["", "", ""])
+        self.assertIn("3 bib numbers in the Hy-Tek file were not used (this meet already has "
+                      "bibs): number the new athletes in the bib dialog", rep.notes)
+        self.assertEqual(m.validate(), [])
+
+    def test_late_file_bibs_when_asked(self):
+        from rfid_finishlynx.meet.importers import merge
+        m, _ = import_hytek(HYTEK, info())
+        rep = merge(m, parse_hytek(self.LATE), file_bibs=True)
+        self.assertEqual({a.last: a.bib for a in m.athletes
+                          if a.team_id and m.team(a.team_id).code == "LAT"},
+                         {"Young": "150", "Adams": "", "Moss": "160"})
+        self.assertIn("Abe Adams (Late): bib 101 already used, left blank", rep.notes)
+
+    def test_file_bibs_taken_while_meet_has_none(self):
+        from rfid_finishlynx.meet.importers import merge
+        m = Meet(meet=info())                    # a meet made by hand, then a file
+        merge(m, parse_hytek(self.LATE))
+        self.assertEqual([a.bib for a in m.athletes], ["150", "101", "160"])
+        m2, _ = import_hytek(HYTEK, info())
+        for a in m2.athletes:
+            a.bib = ""
+        merge(m2, parse_hytek(HYTEK))            # matched, no bibs held: the file fills them
+        self.assertEqual([a.bib for a in m2.athletes], ["101", "", "102", ""])
+        m3, _ = import_hytek(HYTEK, info())
+        m3.athletes[0].bib = ""                  # Birch lost hers; Elwood still holds 102
+        merge(m3, parse_hytek(HYTEK))
+        self.assertEqual(m3.athletes[0].bib, "")
+
+
+CSV_TEXT ="""\
 First Name,Last Name,Sex,Grade,School,Bib #,Division
 Avery,Birch,F,2028,Ridge High School,201,Varsity Girls
 Blake,Calder,Boy,10,Ridge High School,,JV Boys

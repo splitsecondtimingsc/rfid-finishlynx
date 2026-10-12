@@ -4102,6 +4102,7 @@ function importFileRowHtml(fileId, rosterId, roster) {
       <input type="file" id="${fileId}" multiple accept=".json,.txt,.csv,.hy3,application/json,text/plain,text/csv"
              title="MileSplit entries JSON (pick its team-rosters JSON too for full rosters), a Hy-Tek .txt or a .csv">
       <label class="chk"><input type="checkbox" id="${rosterId}"${roster ? ' checked' : ''}> include roster-only athletes</label>
+      ${MEET.active ? `<label class="chk" title="A Hy-Tek file's Comp# or a CSV's bib column. Off once the meet has bibs: numbers that clash are left blank and Assign fits the rest around the ones kept, so the team's bibs come out of order (2026-10-12). Leave off and number them in the bib dialog."><input type="checkbox" id="${fileId}-bibs"${(MEET.counts || {}).with_bib ? '' : ' checked'}> use the file's bib numbers</label>` : ''}
       <button class="btn${MEET.active ? '' : ' primary'}" onclick="meetImportAny('${fileId}', '${rosterId}')">Import</button></div>`;
 }
 // [entries, athletes] in a MileSplit pull: the entries pull has the most
@@ -4129,6 +4130,8 @@ async function meetImportAny(fileId, rosterId) {
     const fd = new FormData();
     fd.append('file', other[0]);
     fd.append('include_roster_only', roster ? '1' : '0');
+    const fb = document.getElementById(fileId + '-bibs');
+    if (fb) fd.append('file_bibs', fb.checked ? '1' : '0');
     importDone(await meetApi('/api/meet/import/file', fd));
     return;
   }
