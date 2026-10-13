@@ -121,6 +121,16 @@ def meet_open():
     svc = _svc()
     meet_id = str(_body().get("id") or "")
     file_only = _file_only()
+    current = svc.meet
+    if current is not None and current.meet.id == meet_id:
+        # the meet that is open: nothing to do (break test 2026-10-13: a 409)
+        return _ok(meet=svc.open_meet(meet_id), already_open=True)
+    if (not file_only and meet_id and meet_id == svc.cards_owner and svc.store.exists(meet_id)
+            and (svc.loaded()["total_cards"] or svc.loaded()["total_reads"])):
+        # its own race cards are still loaded (the meet was detached): they are
+        # newer than its closed-meet archive, so it opens as it is - nothing is
+        # copied back or restored over them (break test 2026-10-13)
+        return _ok(meet=svc.open_meet(meet_id))
     folder = svc.archived_folder(meet_id) if re.fullmatch(r"[A-Za-z0-9._-]+", meet_id) else None
     if folder and os.path.isdir(folder):
         r = web.reopen_closed_meet(folder, file_only=file_only)
@@ -642,7 +652,8 @@ def race_final(rk):
 @bp.route("/api/meet/races/<rk>/refinalize", methods=["POST"])
 def race_refinalize(rk):
     """Reopen + Mark final in one step after a bib change (2026-10-05)."""
-    summary, warnings, sent = _svc().refinalize(rk)
+    # force (break test 2026-10-13): also when finishers would be left out as flagged
+    summary, warnings, sent = _svc().refinalize(rk, force=bool(_body().get("force")))
     return _ok(meet=summary, warnings=warnings, milesplit_sent=sent)
 
 

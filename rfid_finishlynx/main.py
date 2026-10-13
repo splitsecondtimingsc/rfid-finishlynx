@@ -95,8 +95,42 @@ def find_config_path(base: Optional[Path] = None) -> Optional[str]:
     return None
 
 
-def run_cli_mode(config: Config):
-    """Run in CLI mode without web interface."""
+def cli_refusal(config: Config, config_path: Optional[str] = None) -> Optional[str]:
+    """Why the CLI must not start, or None. Audit 2026-10-13 (S-01): --no-web
+    built and connected the drivers directly, past every guard Application
+    has: a preview request (--preview, RFID_PREVIEW=1, a PREVIEW_ONLY file)
+    was ignored. The CLI has no web UI to preview, so it refuses. The
+    hardware lock is taken by run_cli_mode itself."""
+    from .hw_guard import preview_requested
+    reason = preview_requested(config_path)
+    if reason:
+        return f"preview mode ({reason}): the CLI only drives hardware - run the console instead"
+    return None
+
+
+def run_cli_mode(config: Config, config_path: Optional[str] = None, lock=None) -> int:
+    """Run in CLI mode without web interface. Returns the exit status: 2
+    when refused (preview, or another middleware holds the hardware lock -
+    audit 2026-10-13, S-01), else 0."""
+    refusal = cli_refusal(config, config_path)
+    if refusal:
+        logger.error(f"CLI mode refused: {refusal}")
+        return 2
+    from .hw_guard import HardwareLock
+    lock = lock if lock is not None else HardwareLock()
+    if not lock.acquire():
+        owner = getattr(lock, "owner_pid", None)
+        logger.error("CLI mode refused: another middleware " + (f"(pid {owner}) " if owner else "")
+                     + "owns the hardware on this machine")
+        return 2
+    try:
+        _run_cli_devices(config)
+    finally:
+        lock.release()
+    return 0
+
+
+def _run_cli_devices(config: Config):
     from .finishlynx import FinishLynxOutput, FinishLynxListener # NEW: Import FinishLynxListener
     from .lora_receiver import LoRaReceiver
     from .rfid_reader import RFIDReader, TagRead, create_reader
@@ -344,7 +378,9 @@ Examples:
     logger.info(f"RFID-FinishLynx middleware starting in {config.mode} mode")
 
     if args.no_web:
-        run_cli_mode(config)
+        status = run_cli_mode(config, config_path)
+        if status:
+            sys.exit(status)
     else:
         # 2026-10-04 review: the console has no login, so the finish line
         # listens only on this PC unless told otherwise

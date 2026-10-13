@@ -64,10 +64,21 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(out["state"], "held")
 
     def test_two_open_same_gender_races_held(self):
+        # both races without a start list: the read is ambiguous, held
+        third = self.m.create_race("Girls JV", event=6, gender="F")
+        self.m.set_gun(third, GUN + timedelta(minutes=1))
         other = self.m.create_race("Girls Open", event=5, gender="F")
         self.m.set_gun(other, GUN + timedelta(minutes=1))
         out = self.m.ingest("412", GUN + timedelta(minutes=10), "S1")
         self.assertEqual(out["state"], "held")
+
+    def test_unentered_runner_goes_to_the_open_race(self):
+        # owner, 2026-10-13: Girls Varsity has a start list (check-ins) that
+        # lacks 412; Girls Open has none - the open race takes her
+        other = self.m.create_race("Girls Open", event=5, gender="F")
+        self.m.set_gun(other, GUN + timedelta(minutes=1))
+        out = self.m.ingest("412", GUN + timedelta(minutes=10), "S1")
+        self.assertEqual((out["state"], out["race"]), ("assigned", other))
         # but roster still decides
         out = self.m.ingest("101", GUN + timedelta(minutes=10), "S1")
         self.assertEqual(out["race"], self.girls)

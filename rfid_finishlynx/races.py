@@ -52,6 +52,34 @@ def _parse_ts(s: str) -> datetime:
     return datetime.strptime(s, FMT)
 
 
+def parse_distance(text) -> str:
+    """A race distance as typed -> metres as a string ("" = blank, the
+    default). Metres ("3200"), miles ("2 mi", "2 miles", "1.5mi") or km
+    ("5k", "3.2 km"). ValueError on anything else (owner, 2026-10-13: JV
+    races of 2 miles)."""
+    t = str(text or "").strip().lower().replace(",", "")
+    if not t:
+        return ""
+    import re as _re
+    m = _re.fullmatch(r"(\d+(?:\.\d+)?)\s*(m|meters?|metres?|mi|miles?|k|km|kilometers?|kilometres?)?", t)
+    if not m:
+        raise ValueError(f"distance {text!r}: give metres (3200), miles (2 mi) or km (5k)")
+    v, unit = float(m.group(1)), m.group(2) or "m"
+    metres = v * 1609.344 if unit.startswith("mi") else v * 1000 if unit.startswith("k") else v
+    if not 100 <= metres <= 50000:
+        raise ValueError(f"distance {text!r} is not a race distance (100 m to 50 km)")
+    return str(int(round(metres)))
+
+
+def tie_key(elapsed) -> "Optional[int]":
+    """A time as whole thousandths, truncated: equal keys are a true tie -
+    the same place and the same points (owner, 2026-10-13; FinishLynx dead
+    heat, C-008). None for no time."""
+    if elapsed is None:
+        return None
+    return int(float(elapsed) * 1000 + 1e-6) if elapsed >= 0 else -int(-float(elapsed) * 1000 + 1e-6)
+
+
 def _fmt_mmss(sec: float) -> str:
     sec = max(0, int(round(sec)))
     return f"{sec // 60}:{sec % 60:02d}"
@@ -113,6 +141,11 @@ class Read:
     # Placed by hand after being skipped/extra: the operator's call, out of
     # the pass numbering for good.
     pinned: bool = False
+    # A finish typed as a race time ("29:59.00", e.g. from a coach's watch):
+    # that time stays as typed when the race's start moves - the read is
+    # re-anchored to the new gun (owner, 2026-10-13). None = typed as a clock
+    # time, or not typed.
+    typed_elapsed: Optional[float] = None
 
     @property
     def eff_ts(self) -> datetime:
@@ -267,6 +300,7 @@ class RaceManager:
         # files; subtracted from every non-manual finish this manager
         # reports (results, exports) and, via ingest(), sends.
         self.film = FilmOffset()
+        self.save_error: Optional[str] = None      # the last failed state save, shown on the console
         self._next_read_id = itertools.count(1)
         self._next_race_key = itertools.count(1)
         self._lock = threading.RLock()
@@ -302,7 +336,10 @@ class RaceManager:
             else:
                 self._release_reader_locked(key)
             race.status = status
-        self._changed([key])
+            # a race going final (or back) changes which races are open: reads
+            # held as ambiguous may have one race now (break test, 2026-10-13)
+            others = self._reclassify_held()
+        self._changed(sorted({key} | others))
 
     # ------------------------------------------------------------- check-in
 
@@ -326,6 +363,13 @@ class RaceManager:
             if race.status not in ("pending", "checkin"):
                 raise ValueError(f"{race.name} has started: check-in is over")
             reader = (reader or "").strip() or self.checkin_reader_of(race)
+            if self.reader_is_finish(reader):
+                running = [r.name for r in self.races.values()
+                           if r.key != key and r.status == "racing" and r.gun is not None]
+                if running:
+                    # its finish reads would become check-ins (break test 2026-10-13)
+                    raise ValueError(f"{reader} is the finish reader and {running[0]} is still racing: "
+                                     "check in on another reader, or once that race is final")
             other = self.checkin_open.get(reader)
             if other is not None and other != key:
                 if not take:
@@ -473,7 +517,17 @@ class RaceManager:
             if race.status in ("pending", "checkin"):
                 race.status = "racing"
                 self._release_reader_locked(key)     # late grace stays
-        self._changed([key])
+            # counted reads the new start makes impossible go back (break test 2026-10-13)
+            self._revalidate_assigned(key)
+            # a finish typed as a race time stays what was typed (owner, 2026-10-13)
+            for r in self.reads.values():
+                if r.typed_elapsed is not None and r.state == "assigned" and r.race == key:
+                    corr = 0.0 if r.manual else self.film_correction(r, key)
+                    r.override_ts = ts + timedelta(seconds=r.typed_elapsed + corr)
+            # reads held while this race had no start (the wrong card was
+            # started, field test 2026-10-13) flow in once it has one
+            others = self._reclassify_held()
+        self._changed(sorted({key} | others))
 
     def add_gun_candidate(self, key: int, ts: datetime, source: str, arm: bool = True):
         """Record a start signal (the Gun picker lists these). The first
@@ -489,13 +543,15 @@ class RaceManager:
                 return
             race.gun_candidates.append({"ts": _ts(ts), "source": source})
             first = arm and race.gun is None and not race.space_armed
+            others: Set[int] = set()
             if first:
                 race.gun = ts
                 race.gun_source = source
                 if race.status in ("pending", "checkin"):
                     race.status = "racing"
                     self._release_reader_locked(key)     # late grace stays
-        self._changed([key])
+                others = self._reclassify_held()         # as set_gun (2026-10-13)
+        self._changed(sorted({key} | others))
 
     def arm_space(self, key: int, on: bool):
         """Arm (or disarm) a race for a Space-press start. Armed, a start
@@ -549,12 +605,19 @@ class RaceManager:
                 with open(csv_path, "w", newline="") as f:
                     f.write(self.results_csv())
                 summary["archived"].append(csv_path)
-                if self.state_path:
-                    self._save()          # make sure the copy is current
-                    if os.path.exists(self.state_path):
-                        state_copy = os.path.join(archive_dir, "races-state.json")
-                        shutil.copy2(self.state_path, state_copy)
-                        summary["archived"].append(state_copy)
+                # the archive is written from what is in memory now, durably,
+                # before anything is cleared - a failure raises and the meet
+                # stays (audit R-01 2026-10-13: a failed save archived the
+                # previous file and then cleared the current reads)
+                state_copy = os.path.join(archive_dir, "races-state.json")
+                tmp = state_copy + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(self._state_dict(), f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, state_copy)
+                summary["archived"].append(state_copy)
+                self._save()
             self.races.clear()
             self.order = []
             self.reads.clear()
@@ -879,10 +942,45 @@ class RaceManager:
             return None
         elapsed = (read.eff_ts - race.gun).total_seconds()
         floor = self.min_elapsed(read.point, race)
+        if elapsed < 0:
+            return f"before the start for {self._label(read.point)}: {_fmt_mmss(-elapsed)} before the gun"
         if elapsed < floor:
             return (f"too early for {self._label(read.point)}: {_fmt_mmss(elapsed)} after the gun, "
                     f"fastest allowed {_fmt_mmss(floor)} ({_fmt_mmss(self.race_pace(race))}/mile)")
         return None
+
+    def _revalidate_assigned(self, key: int) -> Set[str]:
+        """After a race's start, distance, pace or gender changed: a read the
+        race counts that is now impossible (before the start, sooner than
+        anyone could get there) goes back to held as too early, and that
+        runner's crossings are numbered again, so a later real crossing
+        counts. A read placed or set by hand stays (break test 2026-10-13:
+        a start moved later left finishes of -60 s placed 1st)."""
+        race = self.races.get(key)
+        if race is None or race.gun is None:
+            return set()
+        bibs: Set[str] = set()
+        for r in list(self.reads.values()):
+            if (r.state != "assigned" or r.race != key or r.manual or r.pinned
+                    or r.override_ts is not None):
+                continue
+            why = self._too_early(r, race)
+            if why:
+                r.state, r.race, r.early, r.reason, r.crossing_race = "held", None, True, why, None
+                bibs.add(r.bib)
+        for bib in bibs:
+            self._relabel_bib(bib, key)
+        if bibs:
+            logger.info(f"{race.name}: {len(bibs)} read(s) no longer possible after the change, held")
+        return bibs
+
+    def recheck_held(self) -> None:
+        """Re-run classification of held reads from outside (the meet's bibs
+        or entries changed: an unknown bib may be known now)."""
+        with self._lock:
+            changed = self._reclassify_held()
+        if changed:
+            self._changed(sorted(changed))
 
     def _reclassify_held(self):
         """Re-run classification for every held read (after a race's gender
@@ -1269,10 +1367,17 @@ class RaceManager:
 
         athlete = self.athlete_lookup(read.bib)
         gender = str((athlete or {}).get("gender", "")).upper()[:1]
-        if athlete is None and not gender:
+        if not athlete and not gender:          # {} = the lookup doesn't know the bib (2026-10-13)
             return None, "no chute; unknown bib"
         candidates = [r for r in open_races
                       if r.gender == "X" or (gender and r.gender == gender)]
+        # Not on any start list here: an open race (no start list) takes them
+        # before races whose start list lacks them (owner, 2026-10-13 - a JV
+        # runner's start-loop crossing had become a varsity finish; a slow
+        # varsity runner caught this way is moved with the move-result tool)
+        open_lists = [r for r in candidates if not r.start_list()]
+        if open_lists:
+            candidates = open_lists
         plausible = [r for r in candidates if not self._too_early(read, r)]
         who = f"{gender} " if gender else ""
         if len(plausible) == 1:
@@ -1459,7 +1564,8 @@ class RaceManager:
         self._changed([race_key])
         return out
 
-    def set_finish_time(self, race_key: int, bib: str, shown: datetime) -> dict:
+    def set_finish_time(self, race_key: int, bib: str, shown: datetime,
+                        elapsed: Optional[float] = None) -> dict:
         """Edit a runner's finish time from the Results page (2026-10-09):
         `shown` is the finish clock the results should show. The read that
         counts is retimed (a reader finish gets its film offset added back,
@@ -1475,6 +1581,7 @@ class RaceManager:
                 read = fins[-1]                     # the one results() uses
                 corr = 0.0 if read.manual else self.film_correction(read, race_key)
                 read.override_ts = shown + timedelta(seconds=corr)
+                read.typed_elapsed = elapsed
                 if not read.manual:
                     read.pinned = True              # by hand: wins over the .lif, out of the numbering
                     self._relabel_bib(bib, race_key)
@@ -1482,7 +1589,8 @@ class RaceManager:
             else:
                 point = "FINISH" if "FINISH" in self.finish_readers else sorted(self.finish_readers)[0]
                 read = Read(id=next(self._next_read_id), bib=bib, ts=shown, point=point,
-                            manual=True, reason="finish time typed on the Results page")
+                            manual=True, reason="finish time typed on the Results page",
+                            typed_elapsed=elapsed)
                 self.reads[read.id] = read
                 self._assign(read, race_key)
                 race.roster.add(bib)
@@ -1521,6 +1629,7 @@ class RaceManager:
             else:
                 read.override_ts = None
                 read.pinned = False
+                read.typed_elapsed = None
                 how = "back to the read time"
             self._relabel_bib(bib, race_key)
         logger.info(f"{race.name}: bib {bib} finish reverted ({how})")
@@ -1746,11 +1855,13 @@ class RaceManager:
         return {"added": added, "failed": failed}
 
     def override_time(self, read_id: int, new_ts: Optional[datetime],
-                      note: str = ""):
-        """Correct a read's time. The raw timestamp is kept for audit."""
+                      note: str = "", elapsed: Optional[float] = None):
+        """Correct a read's time. The raw timestamp is kept for audit.
+        `elapsed`: the race time typed, kept when the start moves (2026-10-13)."""
         with self._lock:
             read = self.reads[read_id]
             read.override_ts = new_ts
+            read.typed_elapsed = elapsed if new_ts is not None else None
             if note:
                 read.reason = note
             key = read.race if read.race is not None else read.crossing_race
@@ -1761,14 +1872,17 @@ class RaceManager:
     def set_scoring(self, race_key: int, scorers: int, displacers: int,
                     gender: Optional[str] = None,
                     fastest_pace: Optional[float] = None,
-                    keep_pace: bool = True):
+                    keep_pace: bool = True, distance: Optional[str] = None):
         """Scoring profile, and optionally the race's gender mode ('F', 'M',
         'X' mixed, '' unknown) and fastest pace (s/mile; None with
         keep_pace=False resets to the default). Changing either re-checks
         the held reads, which may now belong here."""
         with self._lock:
             race = self.races[race_key]
-            race.scoring = ScoringProfile(scorers, displacers)
+            if not 1 <= int(scorers) <= 50 or not 0 <= int(displacers) <= 50:
+                # break test 2026-10-13: 0 scorers saved and broke every page
+                raise ValueError("scorers must be 1-50 and displacers 0-50")
+            race.scoring = ScoringProfile(int(scorers), int(displacers))
             reclassify = False
             if gender is not None:
                 g = str(gender).upper()[:1]
@@ -1782,8 +1896,15 @@ class RaceManager:
                     raise ValueError("fastest pace must be between 2:00 and 30:00 per mile")
                 reclassify = reclassify or new != race.fastest_pace
                 race.fastest_pace = new
+            if distance is not None:
+                # editable on the race (owner, 2026-10-13: 2-mile JV races made
+                # with the 5K default held their finishers as too early)
+                d = parse_distance(distance)
+                reclassify = reclassify or d != race.distance
+                race.distance = d
             changed = {race_key}
             if reclassify:
+                self._revalidate_assigned(race_key)
                 changed |= self._reclassify_held()
         self._changed(sorted(changed))
 
@@ -1944,8 +2065,13 @@ class RaceManager:
             finishers = sorted((r for r in rows if r["finish"]),
                                key=lambda r: (r["finish"]["elapsed"],
                                               r["finish"].get("lif_place") or 10 ** 6))
-            for place, row in enumerate(finishers, 1):
-                row["place"] = place
+            # true ties share the place (owner, 2026-10-13)
+            prev_key, place = object(), 0
+            for i, row in enumerate(finishers, 1):
+                key = tie_key(row["finish"].get("elapsed"))
+                if key is None or key != prev_key:
+                    place = i
+                row["place"], prev_key = place, key
             on_course = sorted((r for r in rows if not r["finish"]),
                                key=lambda r: r["splits"][-1]["elapsed"] or 0
                                if r["splits"] else 0)
@@ -2015,7 +2141,12 @@ class RaceManager:
                     and by_team[r["school"]].index(r) < limit]
 
         points: Dict[str, List[int]] = {}
-        for pts, row in enumerate(eligible, 1):
+        prev_key, pts = object(), 0
+        for i, row in enumerate(eligible, 1):
+            key = tie_key((row.get("finish") or {}).get("elapsed"))
+            if key is None or key != prev_key:      # a true tie: the same points (owner, 2026-10-13)
+                pts = i
+            prev_key = key
             points.setdefault(row["school"], []).append(pts)
 
         scores = []
@@ -2495,6 +2626,29 @@ class RaceManager:
         if not self.state_path:
             return
         with self._lock:
+            state = self._state_dict()
+            # Still under the lock: two threads saving at once shared the
+            # .tmp file and could leave invalid JSON, or an older snapshot
+            # could land after a newer one (2026-10-04 review). The file it
+            # replaces stays as .bak, which _load falls back to.
+            tmp = self.state_path + ".tmp"
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(state, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                if os.path.exists(self.state_path):
+                    os.replace(self.state_path, self.state_path + ".bak")
+                os.replace(tmp, self.state_path)
+                self.save_error = None
+            except OSError as e:
+                # shown on the console (audit 2026-10-13: a failed save was only logged)
+                self.save_error = f"race state not saved ({datetime.now():%H:%M:%S}): {e}"
+                logger.error(f"Race state save failed: {e}")
+
+    def _state_dict(self) -> dict:
+        """Everything _save writes, as one dict (under the lock)."""
+        with self._lock:
             state = {
                 "order": self.order,
                 "checkin_open": self.checkin_open,
@@ -2536,27 +2690,14 @@ class RaceManager:
                     "sent_offset": r.sent_offset, "antenna": r.antenna,
                     "unsent": r.unsent, "off_race": r.off_race,
                     "extra": r.extra, "crossing_race": r.crossing_race, "pinned": r.pinned,
+                    "typed_elapsed": r.typed_elapsed,
                 } for r in self.reads.values()],
                 "film_offset": self.film.to_dict(),
             }
             # itertools.count was advanced by the reads above; rebuild
             self._next_read_id = itertools.count(state["next_read_id"])
             self._next_race_key = itertools.count(state["next_race_key"])
-            # Still under the lock: two threads saving at once shared the
-            # .tmp file and could leave invalid JSON, or an older snapshot
-            # could land after a newer one (2026-10-04 review). The file it
-            # replaces stays as .bak, which _load falls back to.
-            tmp = self.state_path + ".tmp"
-            try:
-                with open(tmp, "w") as f:
-                    json.dump(state, f)
-                    f.flush()
-                    os.fsync(f.fileno())
-                if os.path.exists(self.state_path):
-                    os.replace(self.state_path, self.state_path + ".bak")
-                os.replace(tmp, self.state_path)
-            except OSError as e:
-                logger.error(f"Race state save failed: {e}")
+            return state
 
     def restore_state(self, path: str) -> dict:
         """Reopen a closed meet (2026-10-05): load its archived
@@ -2647,6 +2788,7 @@ class RaceManager:
                 extra=str(r.get("extra") or ""),
                 crossing_race=r.get("crossing_race"),
                 pinned=bool(r.get("pinned", False)),
+                typed_elapsed=r.get("typed_elapsed"),
             )
         self.film = FilmOffset.from_dict(state.get("film_offset"))
         logger.info(f"Race state restored: {len(self.races)} races, "

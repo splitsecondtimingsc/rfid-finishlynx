@@ -61,6 +61,15 @@ from typing import Dict, List, Optional, Tuple
 
 from .model import Athlete, Entry, Meet, Race
 
+
+def tie_key(elapsed) -> "Optional[int]":
+    """A time as whole thousandths, truncated: equal keys are a true tie -
+    the same place and the same points (owner, 2026-10-13; FinishLynx dead
+    heat, C-008). None for no time."""
+    if elapsed is None:
+        return None
+    return int(float(elapsed) * 1000 + 1e-6) if elapsed >= 0 else -int(-float(elapsed) * 1000 + 1e-6)
+
 FINISHED = "finished"
 NON_FINISH = ("DNF", "DQ", "DNS")          # also the order they're listed in
 
@@ -163,13 +172,17 @@ def score_event(meet: Meet, finishers_in_order: List[dict], event_num: int,
     # scorers + displacers only; everyone else is skipped, not counted.
     points: Dict[int, int] = {}                     # id(finisher) -> points
     taken: Dict[str, int] = {}
-    pts = 0
+    n, pts, prev_key = 0, 0, object()
     for f in field:
         tid = team_of.get(id(f))
         if tid not in complete or taken.get(tid, 0) >= limit:
             continue
         taken[tid] = taken.get(tid, 0) + 1
-        pts += 1
+        n += 1
+        key = tie_key(f.get("elapsed"))
+        if key is None or key != prev_key:          # a true tie: the same points (owner, 2026-10-13)
+            pts = n
+        prev_key = key
         points[id(f)] = pts
 
     ranked, partial = [], []
@@ -272,6 +285,12 @@ def build_results(meet: Meet, race: Race, rm_results: dict, *,
         if a is None:
             return _warn("unknown_bib", bib, f"bib {bib} crossed but nobody in the meet has it")
         if e is None:
+            if all(en.auto for en in race.entries):
+                # an open race - no entries of its own (owner's rule 2026-10-06:
+                # "if there are 0 entries to that race, no flagging"). The meet
+                # enters its finishers by itself, but not on a preview console and
+                # not at once: no flag per runner meanwhile (field test 2026-10-13)
+                return None
             return _warn("not_entered", bib, f"bib {bib}{label(a)} isn't entered in this race")
         if e.status == "scratched":
             return _warn("scratched", bib, f"bib {bib}{label(a)} is scratched in this race")
@@ -401,11 +420,20 @@ def build_results(meet: Meet, race: Race, rm_results: dict, *,
     # Overall place = race order as RaceManager gave it; event place counts
     # within each scoring event's own field (exhibition runners included:
     # they ran in it, they just don't score).
+    # True ties (owner, 2026-10-13): the same time to the thousandth shares the
+    # place (and the event place); the next one is skipped.
     per_event: Dict[int, int] = {}
+    last: Dict[int, tuple] = {}                     # event -> (tie key, its event place)
+    prev_key, place = object(), 0
     for i, f in enumerate(finishers, 1):
-        f["place"] = i
+        key = tie_key(f.get("elapsed"))
+        if key is None or key != prev_key:
+            place = i
+        f["place"], prev_key = place, key
         per_event[f["event"]] = per_event.get(f["event"], 0) + 1
-        f["event_place"] = per_event[f["event"]]
+        lk = last.get(f["event"])
+        f["event_place"] = lk[1] if (lk and key is not None and lk[0] == key) else per_event[f["event"]]
+        last[f["event"]] = (key, f["event_place"])
 
     events = sorted({e.event for e in race.entries if e.status != "scratched"}
                     | {f["event"] for f in finishers})
@@ -426,6 +454,12 @@ def build_results(meet: Meet, race: Race, rm_results: dict, *,
 
     others.sort(key=lambda f: (NON_FINISH.index(f["status"]), _bib_key(f["bib"]),
                                f["athlete_id"] or ""))
+    # Who they were when frozen (break test 2026-10-13): a team or gender
+    # changed after Mark final shows the race as stale (meet_service.stale_finals)
+    for f in finishers + others:
+        a = athletes.get(f["athlete_id"]) if f["athlete_id"] else None
+        f["team_id"] = a.team_id if a else None
+        f["gender"] = a.gender if a else ""
     # The split columns every printout shares: the points RaceManager expects
     # in this race (any real read there), labelled as the splits are.
     labels = {}

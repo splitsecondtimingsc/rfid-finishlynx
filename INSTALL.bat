@@ -40,8 +40,13 @@ rem list as tools\promote.py, so a used copy (a dev clone, last season's
 rem folder) can't overwrite this PC's meets, closed-meet archives or race
 rem state (2026-10-05). The meet store is excluded by full path: the
 rem rfid_finishlynx\meet code folder shares its name and must be copied.
+rem The per-PC meet folder and camera settings files too (audit 2026-10-13):
+rem the same list on both editions, so a copy made from a camera-edition
+rem PC can't put that PC's paths or camera settings on this one.
 robocopy "%SRC%." "%TARGET%" /e /nfl /ndl /njh /njs ^
     /xf config.yaml config.yaml.tmp races-state.json races-state.json.tmp PREVIEW_ONLY PROMOTIONS.log lif_mirror.err *.log *.mirror *.bak *.orig *.pyc ^
+        meet-folders.json meet-folders.json.tmp camera-prefs.json camera-prefs.json.tmp ^
+        camera-profiles.json camera-profiles.json.tmp camera-seen.json camera-seen.json.tmp ^
     /xd .git .venv .venv-lab venv __pycache__ .pytest_cache closed-meets lif-exports edgeprof dist "%SRC%meet" "%SRC%meet-sync" "%SRC%bench\results" >nul
 if errorlevel 8 goto fail
 :skipcopy

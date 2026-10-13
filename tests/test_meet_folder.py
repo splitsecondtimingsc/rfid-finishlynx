@@ -253,7 +253,8 @@ class CloseIntoResultsFolder(MeetApiBase):
         self.assertIn("results folder already has 1 file(s)", d["error"])
         self.assertIn("003-1-01.lif", d["error"])                 # every file is named
         os.remove(os.path.join(self.lynx, "003-1-01.lif"))
-        self.mgr.ingest("1001", GUN, "FINISH")
+        # a race card in use (a stray held read alone no longer blocks, break test 2026-10-13)
+        self.mgr.set_gun(self.mgr.create_race("Next meet", event=9), GUN)
         d = self.post("/api/meet/open", {"id": self.meet_id}, status=409)
         self.assertIn("close the current meet first", d["error"])
         self.assertEqual(self.left_in_lynx(), [])

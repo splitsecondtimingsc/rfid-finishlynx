@@ -1317,6 +1317,32 @@ _application: Optional['Application'] = None
 _UI_HIDDEN = {"token", "logs_token", "password", "email"}
 
 
+class _BadBody(ValueError):
+    """A request body that is not a JSON object (break test 2026-10-13)."""
+
+
+def _json_obj() -> dict:
+    """The request's JSON body as a dict: {} when there is none; 400 for
+    malformed JSON or a body that isn't an object (null, a list, a number
+    gave 500s on ~20 routes - break test 2026-10-13)."""
+    raw = request.get_data(cache=True)
+    if not raw or not raw.strip():
+        return {}
+    data = request.get_json(force=True, silent=True)
+    if data is None and raw.strip() != b"null":
+        raise _BadBody("the request body is not valid JSON")
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise _BadBody("the request body must be a JSON object")
+    return data
+
+
+@app.errorhandler(_BadBody)
+def _bad_body(e):
+    return jsonify({"error": str(e)}), 400
+
+
 @app.before_request
 def _log_operator_action():
     if request.method != "POST" or not request.path.startswith("/api/"):
@@ -1685,7 +1711,7 @@ def api_set_config():
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     config = _application.config
     restart_needed = False
 
@@ -1936,7 +1962,7 @@ def api_adjust_bib(bib):
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     action = data.get('action', '')
     if action not in ('add', 'remove'):
         return jsonify({'error': 'Action must be "add" or "remove"'}), 400
@@ -1965,7 +1991,7 @@ def api_edit_bib_time(bib):
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     time_str = data.get('time', '')
     lap_number = data.get('lap_number')
 
@@ -2111,7 +2137,7 @@ def api_export_reads_lif():
 
     # Parse request data (support both GET query params and POST JSON)
     if request.method == 'POST':
-        data = request.get_json() or {}
+        data = _json_obj() or {}
         event_number = data.get('event_number', '1')
         round_number = data.get('round_number', '1')
         heat_number = data.get('heat_number', '1')
@@ -2306,7 +2332,7 @@ def api_save_adjusted_lif():
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.get_json() or {}
+    data = _json_obj() or {}
     content = data.get('content', '')
     original_path = data.get('originalPath', '')
     try:
@@ -2367,7 +2393,7 @@ def api_finishlynx_resend():
     Body: {"reads": [{"bib": "16", "clock": "08:19:05.944"}, ...]}"""
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     sent, failed = [], []
     fl = _application.finishlynx
     event_num, round_num, heat_num = _application._get_current_event_info()
@@ -2405,7 +2431,7 @@ def api_publish():
     with flush=true also sends the finish reads kept back while off."""
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     if 'on' not in d:
         return jsonify({'error': '"on" required'}), 400
     out = _application.set_publishing(bool(d['on']), flush=bool(d.get('flush', False)))
@@ -2428,7 +2454,7 @@ def api_film_offset():
         return jsonify({"success": False, "error": "race manager not enabled"}), 400
     if request.method == 'GET':
         return jsonify(mgr.film.stats())
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     manual = ...
     if 'manual' in d:
         if d['manual'] in (None, ''):
@@ -2438,7 +2464,7 @@ def api_film_offset():
                 manual = float(d['manual'])
             except (TypeError, ValueError):
                 return jsonify({"success": False, "error": "manual must be seconds, e.g. 0.65"}), 400
-            if abs(manual) > 30:
+            if manual != manual or abs(manual) > 30:     # NaN broke every page's JSON (2026-10-13)
                 return jsonify({"success": False, "error": "manual offset out of range (±30 s)"}), 400
     apply = bool(d['apply']) if 'apply' in d else None
     reset_race = None
@@ -2470,7 +2496,7 @@ def api_manual_read():
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     bib = data.get('bib', '').strip()
 
     if not bib:
@@ -2636,7 +2662,7 @@ def api_camera_start_restart():
     Body may carry {"enabled", "camera_host", "interface"} to update config."""
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    d = request.get_json(silent=True) or {}
+    d = _json_obj() or {}
     cs = _application.config.camera_start
     changed = False
     if 'enabled' in d:
@@ -2664,7 +2690,7 @@ def api_clocks_gun():
     """
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     try:
         secs = float(d['elapsed_seconds']) if d.get('elapsed_seconds') is not None else None
         race_key = int(d['race']) if d.get('race') not in (None, '') else None
@@ -2680,7 +2706,7 @@ def api_clock_update(port):
     Body: {"label": "...", "enabled": true, "type": "auto|ch340|electro|none"}."""
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     label = d.get('label') if 'label' in d else None
     enabled = bool(d['enabled']) if 'enabled' in d else None
     kind = str(d['type']) if d.get('type') else None
@@ -2833,7 +2859,7 @@ def api_auto_configure_reader():
     """
     from .app import auto_configure_reader
 
-    data = request.json or {}
+    data = _json_obj()
     hostname = data.get('hostname')
 
     try:
@@ -2878,7 +2904,7 @@ def api_remote_register():
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     reader_id = data.get('reader_id', '').strip()
     if not reader_id:
         return jsonify({'error': 'reader_id required'}), 400
@@ -2903,7 +2929,7 @@ def api_remote_command(reader_id):
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     command = data.get('command', '').upper()
     valid_commands = ('START', 'STOP', 'RESET_DEDUP', 'RESTART', 'GET_STATUS')
     if command not in valid_commands:
@@ -2919,7 +2945,7 @@ def api_remote_clock_check_start(reader_id):
     Body: {"count": 10}. Runs in the background; poll with GET."""
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    count = int((request.json or {}).get('count', 10))
+    count = int(_json_obj().get('count', 10))
     if not 1 <= count <= 50:
         return jsonify({'error': 'count must be 1-50'}), 400
     result = _application.start_clock_check(reader_id, count)
@@ -2952,7 +2978,7 @@ def api_remote_set_config(reader_id):
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     section = data.get('section', '')
     values = data.get('values', {})
     if not section or not values:
@@ -3046,7 +3072,7 @@ def api_update_apply():
     from . import updater
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    d = request.get_json(silent=True) or {}
+    d = _json_obj() or {}
     busy = _busy_reasons()
     if busy and not d.get('force'):
         return jsonify({'success': False, 'busy': busy})
@@ -3079,7 +3105,7 @@ def api_support_send():
     from . import support
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    note = str((request.get_json(silent=True) or {}).get('note', ''))[:2000]
+    note = str((_json_obj() or {}).get('note', ''))[:2000]
     try:
         return jsonify(dict(support.send(_application, note), success=True))
     except support.SendError as e:
@@ -3095,7 +3121,7 @@ def api_support_settings():
     The key is stored in config.yaml and never sent back to a page."""
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
-    d = request.get_json(silent=True) or {}
+    d = _json_obj() or {}
     sp = _application.config.support
     if 'token' in d:
         sp.logs_token = str(d['token'] or '').strip()
@@ -3166,9 +3192,45 @@ _TK_PICK = (
 _LAST_DIR = {}          # mode -> folder last picked in, for the next dialog
 
 
+_OWN_ADDRS: dict = {'at': 0.0, 'addrs': frozenset()}
+
+
+def _own_addresses() -> frozenset:
+    """This PC's own interface addresses (cached for a minute)."""
+    import socket
+    import time as _time
+    now = _time.monotonic()
+    if now - _OWN_ADDRS['at'] < 60.0 and _OWN_ADDRS['addrs']:
+        return _OWN_ADDRS['addrs']
+    addrs = set()
+    for host in {socket.gethostname(), socket.getfqdn(), 'localhost'}:
+        try:
+            for info in socket.getaddrinfo(host, None):
+                addrs.add(str(info[4][0]).split('%', 1)[0])
+        except OSError:
+            pass
+    _OWN_ADDRS.update(at=now, addrs=frozenset(addrs))
+    return _OWN_ADDRS['addrs']
+
+
 def _local_request() -> bool:
-    host = request.host.rsplit(':', 1)[0].strip('[]')
-    return request.remote_addr in ('127.0.0.1', '::1', host)
+    """A browser on the console PC itself. Audit 2026-10-13 (W9): the peer
+    was compared with the client's own Host header, so any client could
+    claim to be local by sending Host: <its own address>. Only the peer
+    address counts: loopback, or one of this PC's own interface addresses
+    (the console opened at its LAN address on the same PC). No proxy is
+    trusted."""
+    import ipaddress
+    peer = str(request.remote_addr or '').split('%', 1)[0]
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    if getattr(ip, 'ipv4_mapped', None) is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback:
+        return True
+    return str(ip) in _own_addresses()
 
 
 def _native_pick(mode: str, start: str = '', title: str = '', name: str = '', ext: str = '', desc: str = ''):
@@ -3220,7 +3282,7 @@ def api_fs_pick():
     Open another meet's Browse…"""
     if not _local_request():
         return jsonify({'error': 'the file dialog opens on the console PC'}), 403
-    d = request.get_json(silent=True) or {}
+    d = _json_obj() or {}
     mode = d.get('mode', 'dir')
     if mode not in ('dir', 'open', 'save'):
         return jsonify({'error': 'mode must be dir, open or save'}), 400
@@ -3240,7 +3302,7 @@ def api_fs_save():
     dialog: the page then uses the browser's own save or a download."""
     if not _local_request():
         return jsonify({'error': 'the file dialog opens on the console PC'}), 403
-    d = request.get_json(silent=True) or {}
+    d = _json_obj() or {}
     url = str(d.get('url') or '')
     if not url.startswith('/api/') or url.startswith('/api/fs/'):
         return jsonify({'error': 'not an export'}), 400
@@ -3270,7 +3332,7 @@ def api_fs_save():
 @app.route('/api/athletes/load', methods=['POST'])
 def api_load_athletes():
     """Load athlete data from lynx.ppl in the specified directory."""
-    data = request.json
+    data = _json_obj()
     directory = data.get('directory', '')
 
     if not directory:
@@ -3353,7 +3415,7 @@ def api_parse_relay_evt():
     """Parse relay heat data and all event entries from .evt file content."""
     global _relay_data, _event_data
 
-    data = request.json
+    data = _json_obj()
     content = data.get('content', '')
 
     if not content:
@@ -3391,7 +3453,7 @@ def api_parse_relay_evt():
 @app.route('/api/relay/set-event', methods=['POST'])
 def api_set_relay_event():
     """Set the current relay event/heat (also sets validation heat)."""
-    data = request.json
+    data = _json_obj()
     event_num = data.get('event_num', '')
     heat_num = data.get('heat_num', '')
     event_name = data.get('event_name', '')
@@ -3480,7 +3542,7 @@ def api_parse_evt_entries():
     """Parse all event entries from .evt file content for validation."""
     global _event_data
 
-    data = request.json
+    data = _json_obj()
     content = data.get('content', '')
 
     if not content:
@@ -3507,7 +3569,7 @@ def api_parse_evt_entries():
 @app.route('/api/validation/set-heat', methods=['POST'])
 def api_set_validation_heat():
     """Set the current heat for validation."""
-    data = request.json
+    data = _json_obj()
     event_num = data.get('event_num', '')
     heat_num = data.get('heat_num', '')
 
@@ -3547,7 +3609,7 @@ def api_get_validation_state():
 @app.route('/api/validation/accept', methods=['POST'])
 def api_accept_bib():
     """Accept a pending bib - release held reads to FinishLynx."""
-    data = request.json
+    data = _json_obj()
     bib = data.get('bib', '')
 
     if not bib:
@@ -3579,7 +3641,7 @@ def api_accept_bib():
 @app.route('/api/validation/reject', methods=['POST'])
 def api_reject_bib():
     """Reject a pending bib - add to blacklist."""
-    data = request.json
+    data = _json_obj()
     bib = data.get('bib', '')
 
     if not bib:
@@ -3630,7 +3692,7 @@ def api_set_operation_mode():
     if not _application:
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.get_json()
+    data = _json_obj()
     if not data or 'mode' not in data:
         return jsonify({'error': 'Missing mode parameter'}), 400
 
@@ -3687,7 +3749,7 @@ def api_save_manual_race():
     if not _application.manual_race_in_progress:
         return jsonify({'error': 'No manual race in progress'}), 400
 
-    data = request.get_json()
+    data = _json_obj()
     if not data or 'event' not in data or 'heat' not in data:
         return jsonify({'error': 'Missing event or heat parameter'}), 400
 
@@ -4070,7 +4132,7 @@ def api_save_evt():
         logger.error("api_save_evt: Application not initialized")
         return jsonify({'error': 'Application not initialized'}), 503
 
-    data = request.json
+    data = _json_obj()
     logger.debug(f"api_save_evt: Received data keys: {list(data.keys()) if data else 'None'}")
     filename = data.get('filename', '')
     content = data.get('content', '')
@@ -4240,6 +4302,7 @@ def _races_payload() -> dict:
     payload = mgr.snapshot()
     payload["enabled"] = True
     payload["results"] = {k: mgr.results(int(k)) for k in payload["races"]}
+    payload["save_error"] = getattr(mgr, "save_error", None)       # audit R-01 2026-10-13
     if _application is not None and hasattr(_application, "lif_dirs"):
         lynx_dir, rfid_dir = _application.lif_dirs()
         payload["lif_dirs"] = {"finishlynx": lynx_dir, "rfid": rfid_dir}
@@ -4279,10 +4342,19 @@ def _parse_elapsed(value: str) -> float:
     if not value.strip() or len(parts) > 3 or any(p == "" for p in parts):
         raise ValueError(f"unrecognized race time: {value!r}")
     secs = 0.0
-    for p in parts:
-        secs = secs * 60 + float(p)
+    for i, p in enumerate(parts):
+        v = float(p)
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ValueError(f"unrecognized race time: {value!r}")
+        if i and not 0 <= v < 60:
+            # "1:75" is not 2:15 (break test 2026-10-13)
+            raise ValueError(f"race time {value!r}: minutes and seconds go to 59")
+        secs = secs * 60 + v
     if secs < 0:
         raise ValueError("race time cannot be negative")
+    if secs > 24 * 3600:
+        # break test 2026-10-13: "1e9" / "100000:00" were taken as results
+        raise ValueError(f"race time {value!r} is more than a day")
     return secs
 
 
@@ -4320,12 +4392,26 @@ def api_races_create():
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True)
+    d = _json_obj()
+    from .races import parse_distance
+    try:
+        dist = parse_distance(d.get("distance", ""))       # metres, "2 mi", "5k" (2026-10-13)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        event, round_, heat = int(d.get("event", 0) or 0), int(d.get("round", 1) or 1), int(d.get("heat", 1) or 1)
+        scorers, displacers = int(d.get("scorers", 5) or 5), int(d.get("displacers", 2) or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "event, round, heat, scorers and displacers are numbers"}), 400
+    gender = str(d.get("gender") or "").upper()[:1]
+    if gender not in ("F", "M", "X", "") or not 1 <= scorers <= 50 or not 0 <= displacers <= 50:
+        # break test 2026-10-13: 0 scorers saved and broke every page
+        return jsonify({"error": "gender F, M, X or blank; scorers 1-50; displacers 0-50"}), 400
     key = mgr.create_race(
-        name=d.get("name", ""), event=int(d.get("event", 0)),
-        gender=d.get("gender", ""), round_=int(d.get("round", 1)),
-        heat=int(d.get("heat", 1)), distance=str(d.get("distance", "")),
-        scorers=int(d.get("scorers", 5)), displacers=int(d.get("displacers", 2)),
+        name=str(d.get("name", "") or ""), event=event,
+        gender=gender, round_=round_,
+        heat=heat, distance=dist,
+        scorers=scorers, displacers=displacers,
     )
     # Races picked from the .evt carry its entries: the start list (a
     # finisher not on it waits for "Save to .lif" instead of going to MeetPro)
@@ -4423,6 +4509,8 @@ def _close_middleware(archive_dir: str) -> dict:
     svc = getattr(_application, 'meet_service', None) if _application is not None else None
     meet_copy = svc.archive_to(archive_dir) if svc is not None else None
     summary = mgr.close_meet(archive_dir)
+    if svc is not None:
+        svc.cards_closed()          # no race cards left to belong to a meet (2026-10-13)
     if _application:
         try:
             _application.clear_reads()
@@ -4439,11 +4527,29 @@ def _close_middleware(archive_dir: str) -> dict:
     return summary
 
 
+def _not_final_races() -> List[str]:
+    """Races started (gun) but not final: Close meet warns about them (field
+    test 2026-10-13: a race left open after a fix closed without a word)."""
+    mgr = _race_manager()
+    if not mgr:
+        return []
+    with mgr._lock:
+        return [r.name for k in mgr.order for r in [mgr.races.get(k)]
+                if r is not None and r.gun is not None and r.status != "final"]
+
+
 @app.route('/api/meet/close/plan')
 def api_meet_close_plan():
     """What Close meet will do, for its dialog: the meet folder it makes
     in the results folder (or the one an unfinished close left), what gets
-    copied there, and whether FinishLynx is still open."""
+    copied there, and whether FinishLynx is still open. not_final: races
+    with a gun that are not final yet (the dialog warns)."""
+    data = _api_meet_close_plan().get_json() or {}
+    data["not_final"] = _not_final_races()
+    return jsonify(data)
+
+
+def _api_meet_close_plan():
     svc = getattr(_application, 'meet_service', None)
     if svc is not None and getattr(svc, 'file_only', False) and svc.meet is not None:
         return jsonify({"file_only": True, "folder": svc.archived_folder(svc.meet.meet.id)})
@@ -4479,6 +4585,12 @@ def api_meet_close():
     if not mgr:
         return jsonify({"success": False, "error": "race manager not enabled"}), 400
     svc = getattr(_application, 'meet_service', None)
+    # break test 2026-10-13: no meet open but the race cards belong to one
+    # (detached, or its file could not be read): closing would archive them
+    # without their meet, and opening it later brought back an older archive
+    why = svc.close_refusal() if svc is not None and hasattr(svc, 'close_refusal') else None
+    if why:
+        return jsonify({"success": False, "error": why}), 409
     if svc is not None and getattr(svc, 'file_only', False) and svc.meet is not None:
         return _close_file_only(svc)
     target = _results_folder_close()
@@ -4628,6 +4740,12 @@ def reopen_plan(folder: str) -> dict:
     from . import fl_window, meet_folder
     mgr = _race_manager()
     loaded = bool(mgr is not None and (mgr.races or mgr.reads))
+    svc = getattr(_application, 'meet_service', None) if _application is not None else None
+    if loaded and svc is not None and hasattr(svc, 'loaded'):
+        # empty race cards and held reads are archived away when it opens
+        # (break test 2026-10-13); the meet's own detached cards stay
+        st = svc.loaded()
+        loaded = bool(st["cards"] or st["reads"]) and svc.cards_owner != _folder_meet_id(folder)
     target = _results_folder_close()
     marker = meet_folder.read_marker(folder) or {}
     files = 0
@@ -4662,6 +4780,16 @@ def reopen_plan(folder: str) -> dict:
     return plan
 
 
+def _folder_meet_id(folder: str) -> Optional[str]:
+    """The id of the meet a closed meet folder holds, or None."""
+    import json
+    try:
+        with open(os.path.join(folder, "Middleware", "meet", "meet.json"), encoding="utf-8") as f:
+            return (json.load(f).get("meet") or {}).get("id")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def reopen_closed_meet(folder: str, file_only: bool = False) -> dict:
     """Reopen a closed meet from its meet folder (2026-10-05): its FinishLynx
     files and RFID folder are copied back into the results folder, its race
@@ -4682,10 +4810,14 @@ def reopen_closed_meet(folder: str, file_only: bool = False) -> dict:
             raise MeetError(f"{folder} is not a closed meet folder", 404)
         if marker.get("state") != "done":
             raise MeetError("closing that meet did not finish: click Close meet to finish it first", 409)
-        mgr = _race_manager()
-        if mgr is not None and (mgr.races or mgr.reads):
-            raise MeetError("race panes or reads are loaded: close the current meet first", 409)
         meet_dir = os.path.join(folder, "Middleware", "meet")
+        svc = getattr(_application, 'meet_service', None)
+        mid = _folder_meet_id(folder)
+        if svc.meet is not None and mid and svc.meet.meet.id == mid:
+            return {"meet": dict(svc.summary(), already_open=True), "folder": folder, "files": 0,
+                    "races": 0, "reads": 0, "file_only": svc.file_only}
+        # race cards in use: 409 (break test 2026-10-13); the panes are not touched
+        svc.clear_console_for(mid, file_only=True)
         if not os.path.isfile(os.path.join(meet_dir, "meet.json")):
             raise MeetError(f"no meet file in {meet_dir}", 404)
         svc = getattr(_application, 'meet_service', None)
@@ -4707,8 +4839,15 @@ def reopen_closed_meet(folder: str, file_only: bool = False) -> dict:
     mgr = _race_manager()
     if mgr is None:
         raise MeetError("race manager not enabled", 400)
-    if mgr.races or mgr.reads:
-        raise MeetError("race panes or reads are loaded: close the current meet first", 409)
+    svc = getattr(_application, 'meet_service', None)
+    mid = _folder_meet_id(folder)
+    if svc.meet is not None and mid and svc.meet.meet.id == mid:
+        # already open (break test 2026-10-13)
+        return {"meet": dict(svc.summary(), already_open=True), "folder": folder, "files": 0,
+                "races": 0, "reads": 0}
+    # race cards in use: 409; leftovers (empty cards, a stray read after
+    # Close) are archived away first (break test 2026-10-13)
+    svc.clear_console_for(None)
     loose = meet_folder.sources(root, rfid)
     if loose:
         raise MeetError(f"the results folder already has {len(loose)} file(s), which would be mixed "
@@ -4733,6 +4872,8 @@ def reopen_closed_meet(folder: str, file_only: bool = False) -> dict:
                 pass
         raise MeetError(f"could not load the race state, nothing changed: {e}", 500) from None
     svc = getattr(_application, 'meet_service', None)
+    if mid:
+        svc.note_cards(mid)
     meet = svc.reopen_from(meet_dir, folder)
     logger.info(f"Reopened {folder}: {len(restored)} file(s) back, "
                 f"{summary['races']} race(s), {summary['reads']} read(s)")
@@ -4744,10 +4885,12 @@ def api_races_status(key):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
     try:
-        mgr.set_status(key, request.get_json(force=True)["status"])
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        mgr.set_status(key, _json_obj()["status"])
+    except (ValueError, KeyError) as e:
+        return jsonify({"error": f"status: {e}"}), 400
     return jsonify({"ok": True})
 
 
@@ -4760,7 +4903,7 @@ def api_races_checkin(key):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
     if not d.get("open"):
@@ -4790,7 +4933,7 @@ def api_races_checkin_settings(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     try:
         mgr.set_checkin_settings(key, d.get("reader"), d["auto"] if "auto" in d else "keep")
     except (ValueError, TypeError) as e:
@@ -4806,7 +4949,7 @@ def api_races_checkin_default():
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     try:
         mgr.set_checkin_default(d.get("reader"), d["schedule"] if "schedule" in d else "keep")
     except (ValueError, TypeError) as e:
@@ -4819,7 +4962,7 @@ def api_races_gun(key):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True)
+    d = _json_obj()
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
     if d.get("race_time") not in (None, ""):
@@ -4827,7 +4970,7 @@ def api_races_gun(key):
         # long, so the gun was that long ago
         from .film_offset import parse_race_time     # not in the trimmed station package
         secs = parse_race_time(str(d["race_time"]))
-        if secs is None or secs < 0 or secs > 24 * 3600:
+        if secs is None or secs != secs or secs < 0 or secs > 24 * 3600:
             return jsonify({"error": "race time like 5:00 or 1:05:00.0"}), 400
         ts = datetime.now() - timedelta(seconds=secs)
     elif d.get("clock") == "now":
@@ -4843,10 +4986,40 @@ def api_races_gun(key):
             ts = _parse_clock(d["clock"])
         except (ValueError, KeyError) as e:
             return jsonify({"error": str(e)}), 400
+        raw = str(d.get("clock") or "")
+        if "T" not in raw and " " not in raw.strip():
+            # a time of day without a date: the race's own day (break test
+            # 2026-10-13: an earlier day's race moved 5 days, every time negative)
+            ts = datetime.combine(_race_day(mgr, key), ts.time())
     mgr.set_gun(key, ts, d.get("source", "manual"))
     if _application and hasattr(_application, "on_operator_gun"):
         _application.on_operator_gun(key)
     return jsonify({"ok": True})
+
+
+def _race_day(mgr, key):
+    """The day a race runs on: its start's, else its reads', else the open
+    meet's date, else today."""
+    race = mgr.races.get(key)
+    if race is not None and race.gun is not None:
+        return race.gun.date()
+    with mgr._lock:
+        days = sorted(r.ts.date() for r in mgr.reads.values() if r.race == key)
+    if days:
+        return days[-1]
+    svc = getattr(_application, 'meet_service', None) if _application is not None else None
+    meet = getattr(svc, 'meet', None)
+    if meet is not None and getattr(meet.meet, 'date', ''):
+        try:
+            return datetime.fromisoformat(meet.meet.date).date()
+        except ValueError:
+            pass
+    with mgr._lock:
+        guns = sorted(r.gun for r in mgr.races.values() if r.gun is not None)
+        latest = max((r.ts for r in mgr.reads.values()), default=None)
+    if guns:
+        return guns[-1].date()
+    return latest.date() if latest is not None else datetime.now().date()
 
 
 @app.route('/api/races/<int:key>/arm', methods=['POST'])
@@ -4859,7 +5032,7 @@ def api_races_arm(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     mgr.arm_space(key, bool(d.get("on", True)))
     return jsonify({"ok": True})
 
@@ -4875,7 +5048,7 @@ def api_races_chip_lif(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     bib = str(d.get("bib", "")).strip()
     if not bib:
         return jsonify({"error": "bib required"}), 400
@@ -4894,7 +5067,7 @@ def api_races_waive(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     bib = str(d.get("bib", "")).strip()
     if not bib:
         return jsonify({"error": "bib required"}), 400
@@ -4910,7 +5083,7 @@ def api_races_remove_bib(key):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     bib = str(d.get("bib", "")).strip()
     if not bib:
         return jsonify({"error": "bib required"}), 400
@@ -4925,7 +5098,7 @@ def api_races_scoring(key):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True)
+    d = _json_obj()
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
     kw = {}
@@ -4939,10 +5112,12 @@ def api_races_scoring(key):
         except ValueError as e:
             return jsonify({"error": f"fastest pace: {e}"}), 400
         kw["keep_pace"] = False
+    if "distance" in d:
+        kw["distance"] = str(d.get("distance") or "")      # metres, "2 mi", "5k" (2026-10-13)
     try:
         mgr.set_scoring(key, int(d["scorers"]), int(d["displacers"]), **kw)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    except (ValueError, TypeError, KeyError) as e:
+        return jsonify({"error": f"scoring: {e}"}), 400
     return jsonify({"ok": True})
 
 
@@ -4956,7 +5131,7 @@ def api_races_add_read(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    d = request.get_json(force=True)
+    d = _json_obj()
     bib = str(d.get("bib", "")).strip()
     if not bib:
         return jsonify({"error": "bib required"}), 400
@@ -5012,7 +5187,7 @@ def api_races_save_lif(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    d = request.get_json(silent=True) or {}
+    d = _json_obj() or {}
     splits = bool(d.get("splits", True))
     if not mgr.results(key)["finishers"]:
         return jsonify({"error": "no finishers yet - nothing to save"}), 400
@@ -5083,7 +5258,7 @@ def api_races_crossings(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     items = d.get("crossings")
     if not isinstance(items, dict) or not items:
         return jsonify({"error": "crossings: {station: {before, after}} expected"}), 400
@@ -5156,8 +5331,14 @@ def api_races_move():
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True)
-    mgr.move_bib(str(d["bib"]), int(d["from"]), int(d["to"]))
+    d = _json_obj()
+    try:
+        bib, a, b = str(d["bib"]), int(d["from"]), int(d["to"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "bib, from and to (race keys) are required"}), 400
+    if a not in mgr.races or b not in mgr.races:
+        return jsonify({"error": "no such race"}), 404
+    mgr.move_bib(bib, a, b)
     return jsonify({"ok": True})
 
 
@@ -5166,6 +5347,8 @@ def api_reads_ignore(read_id):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
+    if read_id not in mgr.reads:
+        return jsonify({"error": f"no read {read_id}"}), 404
     mgr.ignore_read(read_id)
     return jsonify({"ok": True})
 
@@ -5175,7 +5358,14 @@ def api_reads_assign(read_id):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    mgr.assign_read(read_id, int(request.get_json(force=True)["race"]))
+    try:
+        race = int(_json_obj()["race"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "race (a race key) is required"}), 400
+    reads, races = getattr(mgr, "reads", None), getattr(mgr, "races", None)
+    if (reads is not None and read_id not in reads) or (races is not None and race not in races):
+        return jsonify({"error": "no such read or race"}), 404
+    mgr.assign_read(read_id, race)
     # With finishlynx.feed "all" a split the panes kept out at ingest goes
     # to FinishLynx now that the operator has placed it (or a note says why not).
     note = None
@@ -5202,7 +5392,7 @@ def api_reads_override(read_id):
     read = mgr.reads.get(read_id)
     if read is None:
         return jsonify({"error": f"no read {read_id}"}), 404
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     clock = str(d.get("clock", "") or "").strip()
     elapsed = str(d.get("elapsed", "") or "").strip()
     if not elapsed and clock and clock.count(":") < 2:
@@ -5224,7 +5414,9 @@ def api_reads_override(read_id):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     corr = mgr.film_correction(read, key) if (mgr.is_finish_read(read) and not read.manual) else 0.0
-    mgr.override_time(read_id, shown + timedelta(seconds=corr), d.get("note", ""))
+    # a race time stays as typed if the start moves later (2026-10-13)
+    typed = (shown - race.gun).total_seconds() if (elapsed and race is not None and race.gun) else None
+    mgr.override_time(read_id, shown + timedelta(seconds=corr), d.get("note", ""), elapsed=typed)
     return jsonify({"ok": True})
 
 
@@ -5239,9 +5431,14 @@ def api_races_finish_time(key):
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
     race = mgr.races[key]
-    d = request.get_json(force=True) or {}
-    bib = str(d.get("bib", "")).strip()
+    d = _json_obj() or {}
     value = str(d.get("time", "") or "").strip()
+    try:
+        # "01417" is 1417; junk is refused (break test 2026-10-13)
+        from .bib_input import clean_bib
+        bib = clean_bib(d.get("bib", ""), allow_empty=True)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     if not bib or not value:
         return jsonify({"error": "bib and time are required"}), 400
     if race.gun is None:
@@ -5257,7 +5454,9 @@ def api_races_finish_time(key):
         return jsonify({"error": str(e)}), 400
     if shown <= race.gun:
         return jsonify({"error": "that is not after the gun"}), 400
-    out = mgr.set_finish_time(key, bib, shown)
+    # a race time stays as typed if the start moves later (2026-10-13)
+    typed = (shown - race.gun).total_seconds() if value.count(":") < 2 else None
+    out = mgr.set_finish_time(key, bib, shown, elapsed=typed)
     return jsonify({"ok": True, **out})
 
 
@@ -5270,7 +5469,7 @@ def api_races_revert_finish(key):
         return jsonify({"error": "race manager not enabled"}), 400
     if key not in mgr.races:
         return jsonify({"error": f"no race {key}"}), 404
-    bib = str((request.get_json(force=True) or {}).get("bib", "")).strip()
+    bib = str((_json_obj() or {}).get("bib", "")).strip()
     try:
         out = mgr.revert_finish(key, bib)
     except ValueError as e:
@@ -5296,7 +5495,7 @@ def api_reads_use(read_id):
     mgr = _race_manager()
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
-    d = request.get_json(force=True) or {}
+    d = _json_obj() or {}
     try:
         key = int(d.get("race"))
     except (TypeError, ValueError):

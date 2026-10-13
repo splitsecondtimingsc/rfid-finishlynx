@@ -53,6 +53,15 @@ wearer popover, C2 results drawer, D printouts). Plan: MEET-MANAGEMENT-PLAN.md.
 ```
 `{"active": false}` in legacy mode. `fix` drives the Meet tab's badge count.
 
+2026-10-13 (break test): meet.json is saved durably (temp file, fsync, replace) and the copy
+before it is kept as `meet.json.bak`. A meet.json that can't be read is loaded from the .bak:
+summary `load_warning: text` and a `fix` row of kind `meet_file` for the rest of the session
+(`/api/status` `meet_file_problem` too). Both unreadable at start: `{"active": false,
+"load_error": {id, error, text}}` and `/api/status` `meet_file_problem: text`, instead of a
+silent legacy mode; Close meet is then refused (409) so the race cards are not archived
+without their meet. `stale_final` also counts a finisher whose team or gender changed after
+Mark final (frozen rows carry `team_id` and `gender` since 2026-10-13).
+
 ## Meet
 
 | Method | Path | Body / query | Returns |
@@ -68,6 +77,20 @@ wearer popover, C2 results drawer, D printouts). Plan: MEET-MANAGEMENT-PLAN.md.
 | POST | /api/meet/divisions | `{divisions: [{id?, name, gender?: ""\|"M"\|"F", team_ids?: [], grades?: [], team_scores?: true}]}` | summary — the meet's whole division list (2026-10-06, see Divisions below). A row without `id` is new; a division left out is deleted and taken off every race; `[]` = no divisions. 400 for a blank or repeated name, a bad gender, an unknown team or id |
 | POST | /api/meet/close | (existing route, extended) | also archives `meet/<id>/` and detaches; with a results folder (2026-10-05) archives into `<results>/<date> <name>/Middleware` and moves the FinishLynx + RFID files (not folders) there (meet_folder.py), back into the same folder for a reopened meet; 409 while FinishLynx is open, 500 with `cleared` when the file move must be finished by calling again |
 | GET | /api/meet/close/plan | — | `{folder, resume, again, files, rfid_files, bytes, finishlynx_running}`; `folder: null` = closed-meets fallback; `{file_only: true, folder}` for a meet opened without FinishLynx |
+
+2026-10-13 (break test: a new meet took over the last meet's race cards, a never-run race got
+its results and Close filed the old reads under the new meet): new / open / open-file / an
+import that creates a meet refuse **409** `{error: "close the current meet first: N race
+card(s) / M read(s) are loaded", race_cards, reads, cards_meet}` while race cards are in use
+(a gun, final, or reads on them) or reads count (assigned), unless they are the target meet's
+own (`meet/CARDS` names the meet the loaded cards belong to: set when a meet opens with its
+cards, cleared by Close meet; a detached meet keeps it). Opening that meet again keeps its
+loaded cards (no archive is restored over them). Only empty race cards and held / ignored reads
+(e.g. a stray read after Close, the reader still running) never block: they are archived to
+`closed-meets/<date-time>-leftovers` and cleared first (left alone for a meet-file-only open).
+Open on the meet that is already open: 200 `already_open: true`, nothing changes.
+`/api/meet/close` with no meet open while the race cards belong to one (detached, or its file
+unreadable): 409, nothing closed - open that meet, then Close meet.
 
 2026-10-05: `/api/meet/open` for a meet with `closed_to` (in `/api/meet/list`), and `/api/meet/open-file` for any path inside a closed meet folder, reopen it (`web.reopen_closed_meet`): files copied back, race state restored; response adds `reopened: {folder, files, races, reads}`. 409 while FinishLynx is open, panes/reads are loaded or the results folder has files (every file named).
 
@@ -161,7 +184,7 @@ not retried until the times change).
 | GET | /api/meet/races/<rk>/results | | `{status, official: bool, results: frozen-or-live, unresolved: [warning], team_scores, split_labels, milesplit: {uploaded_at, ok}, issues: [{code, label, text, bib, athlete_id, name, team, team_id, gender, event, elapsed, crossed, status, entered_in: [race name], blocked}], ignored: [{bib, athlete_id, name}], not_entered: [{bib, athlete_id, name, team, gender, from: [race name], blocked}], divisions: [{id, name, team_scores, text, results}]}`. issues = flagged runners left out of `results` (2026-10-06); not_entered = the not_entered ones in the old shape. divisions (2026-10-06): the standings of each division the race is scored in, worked out from `results` (same shape; `event_place` = place in the division, `points` from the division's scoring, `overall_place` = place in the event; `teams` `{}` without team scores); `[]` without divisions |
 | POST | /api/meet/races/<rk>/final | | summary; 409 `{error, unresolved: [...]}` (scoring.Unresolved); also sets the pane final |
 | POST | /api/meet/races/<rk>/reopen | | summary |
-| POST | /api/meet/races/<rk>/refinalize | | `{meet, warnings, milesplit_sent}` — Reopen + Mark final in one step after a bib change (2026-10-05): the results are worked out again from the reads with the current bibs; all or nothing (409 `{error, unresolved}`, the race keeps its old frozen results); `milesplit_sent` = its results were uploaded before (the console offers Send again). Summary `fix` kind `stale_final` (detail: rks) lists final races whose frozen results show a bib the athlete no longer holds |
+| POST | /api/meet/races/<rk>/refinalize | `{force?}` | `{meet, warnings, milesplit_sent}` — Reopen + Mark final in one step after a bib change (2026-10-05): the results are worked out again from the reads with the current bibs; all or nothing (409 `{error, unresolved}`, the race keeps its old frozen results); `milesplit_sent` = its results were uploaded before (the console offers Send again). Summary `fix` kind `stale_final` (detail: rks) lists final races whose frozen results show a bib the athlete no longer holds. 2026-10-13: 409 `{error, flagged: [{bib, athlete_id, name, code, text}]}` when runners who finished would be left out as flagged (e.g. their bib cleared), unless `force: true`; Undo takes a Re-finalize back. Reopen / Re-finalize's "reads are not loaded" check counts finished rows only (a race marked final before it was run, all DNS, can be reopened) |
 | POST | /api/meet/races/<rk>/import-lif | multipart `file` (a .lif) | `{lif: {name, header, timed, flagged, finishers, moved, gone, unknown}, refinalized, refinalize_error?, unresolved?, warnings, milesplit_sent, meet}` — "Select .lif file" (2026-10-09): the picked .lif is the truth for the race's pane (its times replace the mat's finishes, its DNF/DQ rows take the finish away, other runners still finish from the reads); a final race is re-finalized from it. The pane's own routes: `POST /api/races/<key>/import_lif`, `POST /api/races/<key>/clear_lif` |
 | POST | /api/meet/races/<rk>/marks | `{bib, mark: "DNF"|"DQ"|"DNS"|null}` | summary |
 | POST | /api/meet/races/<rk>/issues/<bib> | `{action: "ignore"\|"unignore"\|"override"\|"swap"\|"give", athlete_id?}` | `{meet: summary, report: {action, refinalized: [rk], errors: [text], milesplit_sent: [rk]}}` — a flagged runner (2026-10-06, see Flagged runners). ignore: out of this race's results (`Race.ignored`, while the bib is still that athlete's); override: its holder is entered here and scores (out of their other race; a scratch here becomes entered), 409 across genders; swap + athlete_id: the runner who wore it swaps bibs with the holder; give + athlete_id: a bib nobody has goes to that athlete. Every final race touched is re-finalized by itself |

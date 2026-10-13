@@ -10,8 +10,11 @@ import os
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location(
-    "split_lab", os.path.join(HERE, os.pardir, "bench", "split_lab.py"))
+LAB = os.path.join(HERE, os.pardir, "bench", "split_lab.py")
+if not os.path.isfile(LAB):
+    # bench/ is export-ignore: not in a hand-out package (audit 2026-10-13, S-04)
+    raise unittest.SkipTest("bench/split_lab.py is not in this tree (a package)")
+spec = importlib.util.spec_from_file_location("split_lab", LAB)
 lab = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lab)
 

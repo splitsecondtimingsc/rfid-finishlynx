@@ -42,12 +42,16 @@ Conventions (2026-10-03):
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
+import shutil
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
@@ -573,16 +577,31 @@ def slug(text: str) -> str:
 
 
 class MeetStore:
-    """<root>/<meet-id>/meet.json, saved atomically."""
+    """<root>/<meet-id>/meet.json, saved atomically and durably, the copy
+    before it kept as meet.json.bak.
+
+    Break test 2026-10-13: a damaged meet.json (power cut, disk full, a sync
+    tool's half write) dropped the console into legacy mode without a word
+    and the meet was lost. save() now writes a temp file, flushes and fsyncs
+    it, keeps the previous meet.json as meet.json.bak and only then replaces
+    it; load() falls back to the .bak (logged, and noted in `restored` so the
+    console can say so)."""
 
     FILENAME = "meet.json"
+    BACKUP = ".bak"
 
     def __init__(self, root: str = "meet"):
         self.root = root
         self.on_save = None            # meet sync: told after every save (2026-10-07)
+        # meet id -> the warning text, for a meet loaded from its .bak
+        # because meet.json could not be read (until it is saved again)
+        self.restored: Dict[str, str] = {}
 
     def path(self, meet_id: str) -> str:
         return os.path.join(self.root, meet_id, self.FILENAME)
+
+    def backup_path(self, meet_id: str) -> str:
+        return self.path(meet_id) + self.BACKUP
 
     def list(self) -> List[str]:
         if not os.path.isdir(self.root):
@@ -593,9 +612,37 @@ class MeetStore:
     def exists(self, meet_id: str) -> bool:
         return os.path.isfile(self.path(meet_id))
 
+    def _read(self, meet_id: str) -> Tuple[dict, "Meet"]:
+        """(meet.json as a dict, the Meet), from the .bak when meet.json
+        can't be read (a warning is logged and kept in `restored`). Raises
+        meet.json's error when neither can be read."""
+        try:
+            with open(self.path(meet_id), encoding="utf-8") as f:
+                d = json.load(f)
+            meet = Meet.from_dict(d)
+            self.restored.pop(meet_id, None)
+            return d, meet
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            first = e
+        try:
+            with open(self.backup_path(meet_id), encoding="utf-8") as f:
+                d = json.load(f)
+            meet = Meet.from_dict(d)
+        except (OSError, ValueError, KeyError, TypeError):
+            raise first from None
+        msg = (f"{self.FILENAME} of meet {meet_id} could not be read ({first}); restored from "
+               f"its backup ({self.FILENAME}{self.BACKUP}, saved {d.get('updated_at') or '?'}): "
+               f"the last change before the damage may be missing - check it")
+        logger.warning(msg)
+        self.restored[meet_id] = msg
+        return d, meet
+
+    def read(self, meet_id: str) -> dict:
+        """meet.json as a dict (from the .bak if need be, see _read)."""
+        return self._read(meet_id)[0]
+
     def load(self, meet_id: str) -> Meet:
-        with open(self.path(meet_id), encoding="utf-8") as f:
-            return Meet.from_dict(json.load(f))
+        return self._read(meet_id)[1]
 
     def save(self, meet: Meet) -> str:
         meet.updated_at = datetime.now().isoformat(timespec="seconds")
@@ -604,7 +651,24 @@ class MeetStore:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(meet.to_dict(), f, indent=1, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.isfile(path):
+            if meet.meet.id in self.restored:
+                # meet.json is the damaged one: keep the good .bak, set the
+                # damaged file aside for a look
+                try:
+                    os.replace(path, path + ".damaged")
+                except OSError:
+                    pass
+            else:
+                try:
+                    shutil.copyfile(path, path + self.BACKUP + ".tmp")
+                    os.replace(path + self.BACKUP + ".tmp", path + self.BACKUP)
+                except OSError:
+                    logger.warning(f"Could not keep {path}{self.BACKUP}", exc_info=True)
         os.replace(tmp, path)
+        self.restored.pop(meet.meet.id, None)
         if self.on_save is not None:
             try:
                 self.on_save(meet.meet.id)

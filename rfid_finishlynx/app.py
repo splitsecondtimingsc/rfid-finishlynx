@@ -1833,8 +1833,10 @@ class Application:
         if not mr or not mr.start_time:
             return None
         try:
-            day = date.fromisoformat(meet.date)
-        except (TypeError, ValueError):
+            # the day is meet.meet.date: meet.date raised AttributeError on every
+            # check-in tick, so scheduled check-in never opened (break test 2026-10-13)
+            day = date.fromisoformat(meet.meet.date)
+        except (TypeError, ValueError, AttributeError):
             day = date.today()
         hh, mm = mr.start_time.split(":")
         return datetime.combine(day, dtime(int(hh), int(mm)))
@@ -3626,6 +3628,15 @@ class Application:
         if self.finishlynx:
             self.finishlynx.disconnect()
 
+    def _meet_file_problem(self) -> Optional[str]:
+        svc = getattr(self, "meet_service", None)
+        if svc is None:
+            return None
+        err = getattr(svc, "load_error", None)
+        if err:
+            return err.get("text")
+        return getattr(svc, "_restored_note", None)
+
     def get_status(self) -> Dict:
         """Get current application status."""
         with self._reads_lock:
@@ -3668,6 +3679,9 @@ class Application:
             # Mat-vs-film finish offset learned from FinishLynx's .lif files
             'film_offset': self.race_manager.film.stats() if self.race_manager else None,
             # Start gun sniffed from the camera
+            # the open meet's file could not be read at start, or was restored
+            # from its .bak (break test 2026-10-13); None when all is well
+            'meet_file_problem': self._meet_file_problem(),
             'camera_start_enabled': self.config.camera_start.enabled,
             'camera_start': self.camera_start.status() if self.camera_start else None,
             'camera_gun': (self._camera_gun.isoformat()

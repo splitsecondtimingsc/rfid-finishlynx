@@ -511,10 +511,23 @@ async function api(path, body) {
   return d;
 }
 
+/* A failed race-state save (disk full, folder locked) is shown, not just logged
+   (audit 2026-10-13): everything since the last good save is only in memory. */
+function showSaveError(msg) {
+  let el = document.getElementById('save-error');
+  if (!msg) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div'); el.id = 'save-error';
+    el.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:9999;background:var(--crit);color:#fff;padding:8px 14px;border-radius:8px;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.5)';
+    document.body.appendChild(el);
+  }
+  el.textContent = 'Not saved: ' + msg + ' - free the disk / folder; the next change saves again.';
+}
 async function refresh() {
   const d = await (await fetch('/api/races')).json();
   noteNewReads(d);
   DATA = d;
+  showSaveError(d.save_error);
   render();
   renderStations();
   renderEvtSync();
@@ -1891,6 +1904,9 @@ async function openCloseMeet() {
   let plan = { folder: null };
   try { plan = await (await fetch('/api/meet/close/plan')).json(); } catch (e) {}
   const mb = b => (b / 1e6).toFixed(b < 1e7 ? 1 : 0) + ' MB';
+  const notFinal = plan.not_final || [];
+  const notFinalWarn = notFinal.length ? `<div class="hint" style="color:var(--warn);margin-bottom:8px"><b>Not final yet:</b> ${notFinal.map(esc).join(', ')}.
+      Mark ${notFinal.length > 1 ? 'them' : 'it'} final first if the results are done - a race that is not final has no official results to print or send.</div>` : '';
   if (plan.file_only) {
     dlg(`<h3>Save &amp; close</h3><div class="body" style="max-width:520px">
       This meet was opened without FinishLynx. ${plan.folder
@@ -1922,6 +1938,7 @@ async function openCloseMeet() {
     and the reader's dedup memory.${plan.error ? `<br><br>Results folder: ${esc(plan.error)}` : ''}`;
   }
   dlg(`<h3>Close meet</h3><div class="body">
+    ${notFinalWarn}
     <div style="display:flex;gap:18px;margin-bottom:8px">
       <span><span class="num" style="font-size:18px">${races}</span> race pane${races === 1 ? '' : 's'}</span>
       <span><span class="num" style="font-size:18px">${finishers}</span> finisher${finishers === 1 ? '' : 's'}</span>
@@ -2807,6 +2824,7 @@ function openCreate() {
     <label>Gender</label><select id="f-gender">
       <option value="F">Girls</option><option value="M">Boys</option>
       <option value="X">Mixed — any athlete</option><option value="">— (roster only)</option></select>
+    <label>Distance</label><input id="f-dist" placeholder="5000 (default)" title="Metres (3200), miles (2 mi) or km (5k)">
     <label>Start time</label><select id="f-gun">${recentStartOptions()}</select>
     <div class="hint" style="font-size:11.5px;color:var(--ink-3)">Starts already heard from the camera or FinishLynx's clock. Leave on "wait" and the next gun arms this race automatically; every start also appears in the pane's Start ▾ picker.</div>
     <label>Scorers / displacers</label>
@@ -2816,7 +2834,7 @@ function openCreate() {
     <button class="btn" onclick="closeDlg()">Cancel</button>
     <button class="btn primary" onclick="closeDlg();api('/api/races/create',{
       name: gv('f-name'), event: gv('f-event'), round: gv('f-round') || 1, heat: gv('f-heat') || 1,
-      gender: gv('f-gender'), scorers: gv('f-scorers'), displacers: gv('f-displacers'),
+      gender: gv('f-gender'), scorers: gv('f-scorers'), displacers: gv('f-displacers'), distance: gv('f-dist').trim(),
       gun: gv('f-gun'), gun_source: gunSourceFor(gv('f-gun'))})">Create</button>
   </div>`);
 }
@@ -2975,6 +2993,9 @@ function openScoring(key) {
       <option value="M" ${r.gender === 'M' ? 'selected' : ''}>Boys</option>
       <option value="X" ${r.gender === 'X' ? 'selected' : ''}>Mixed — any athlete in the meet file</option>
       <option value="" ${!r.gender ? 'selected' : ''}>— nobody (roster / chute only)</option></select>
+    <label>Distance</label>
+    <input id="f-dist" value="${esc(r.distance || '')}" placeholder="5000 (default)" title="Metres (3200), miles (2 mi) or km (5k)">
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3)">Metres, or 2 mi / 5k. Sets how soon after the gun a finish can count; held finishers come in when it changes.</div>
     <label>Fastest pace anyone here could run (min:sec per mile)</label>
     <input id="f-pace" value="${r.fastest_pace ? fmtPace(r.fastest_pace) : ''}" placeholder="${fmtPace(DATA.fastest_pace_default)} (default)" oninput="paceTyped(${key})">
     <div id="f-floors" class="hint" style="font-size:11.5px;color:var(--ink-3)">Earliest a read counts: ${floors}</div>
@@ -2984,7 +3005,7 @@ function openScoring(key) {
     <button class="btn" title="Reads before / Reads after per station: which crossing counts" onclick="closeDlg(); openCrossings(${key})">Crossings…</button>
     <button class="btn" onclick="closeDlg()">Cancel</button>
     <button class="btn primary" onclick="closeDlg();api('/api/races/${key}/scoring',
-      {scorers: gv('f-scorers'), displacers: gv('f-displacers'), gender: gv('f-gender'), fastest_pace: gv('f-pace').trim()})">Save</button>
+      {scorers: gv('f-scorers'), displacers: gv('f-displacers'), gender: gv('f-gender'), fastest_pace: gv('f-pace').trim(), distance: gv('f-dist').trim()})">Save</button>
   </div>`);
 }
 function paceTyped(key) {
@@ -5196,19 +5217,21 @@ function staleFinalDlg(rks) {
     <button class="btn" onclick="closeDlg()">Later</button>
     <button class="btn primary" id="sf-go" onclick='refinalizeAll(${esc(JSON.stringify(rks)).replace(/"/g, "&quot;")})'>Re-finalize now</button></div>`);
 }
-async function refinalizeAll(rks) {
+async function refinalizeAll(rks, force) {
   const go = document.getElementById('sf-go');
   if (go) { go.disabled = true; go.textContent = 'Working…'; }
   const out = [], resend = [];
   for (const rk of rks) {
-    const r = await meetApi(`/api/meet/races/${rk}/refinalize`, {});
+    // force: finishers who would now be flagged are left out anyway (break test 2026-10-13)
+    const r = await meetApi(`/api/meet/races/${rk}/refinalize`, force ? { force: true } : {});
     if (r.ok) {
       out.push(`<div style="color:var(--good)">${ICO.check} ${esc(meetRaceName(rk))}: re-finalized</div>`);
       if (r.data.milesplit_sent) resend.push(rk);
     } else {
-      const un = (r.data.unresolved || []).slice(0, 6).map(w => `<li>${esc(w.text)}</li>`).join('');
+      const un = (r.data.unresolved || r.data.flagged || []).slice(0, 6).map(w => `<li>${esc(w.text)}</li>`).join('');
+      const anyway = (r.data.flagged || []).length ? ` <button class="btn small" onclick='refinalizeAll(${esc(JSON.stringify([rk])).replace(/"/g, "&quot;")}, true)'>Re-finalize anyway</button>` : '';
       out.push(`<div style="color:var(--warn)">${ICO.warn} ${esc(meetRaceName(rk))}: ${esc(r.data.error)}${un ? `<ul style="margin:4px 0;padding-left:18px">${un}</ul>` : ''}
-        <button class="btn small" onclick="refinalizeReopen('${esc(rk)}')">Reopen ${esc(meetRaceName(rk))} instead</button></div>`);
+        <button class="btn small" onclick="refinalizeReopen('${esc(rk)}')">Reopen ${esc(meetRaceName(rk))} instead</button>${anyway}</div>`);
     }
   }
   const el = document.getElementById('sf-out');
@@ -6124,7 +6147,7 @@ function raceNewDlg() {
     <div id="nr-new" style="display:grid;grid-template-columns:1fr 1fr;gap:0 10px">
       <div style="grid-column:span 2"><label>Event name</label><input id="nr-ename" placeholder="Open 5k Run CC"></div>
       <div><label>Gender</label><select id="nr-gender"><option value="X">Mixed</option><option value="F">Girls</option><option value="M">Boys</option></select></div>
-      <div><label>Distance (m)</label><input id="nr-dist" class="num" placeholder="5000"></div>
+      <div><label>Distance</label><input id="nr-dist" class="num" placeholder="5000" title="Metres (3200), miles (2 mi) or km (5k)"></div>
       <div style="grid-column:span 2"><label>Division (optional)</label><input id="nr-div" placeholder="Open"></div></div>
     <div style="display:grid;grid-template-columns:2fr 1fr;gap:0 10px">
       <div><label>Race name (optional)</label><input id="nr-name" placeholder="defaults to the event's name"></div>
@@ -6147,7 +6170,7 @@ async function raceNewSave() {
     const name = gv('nr-ename').trim(), dist = gv('nr-dist').trim();
     if (!name) { document.getElementById('nr-msg').textContent = 'Give the event a name'; return; }
     body.new = { name, gender: gv('nr-gender'), division: gv('nr-div').trim() };
-    if (dist) body.new.distance_m = parseInt(dist, 10);
+    if (dist) body.new.distance = dist;          // metres, "2 mi" or "5k": the server converts (2026-10-13)
   }
   const r = await meetApi('/api/meet/races', body);
   if (!r.ok) { document.getElementById('nr-msg').textContent = r.data.error; return; }

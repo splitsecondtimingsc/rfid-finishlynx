@@ -1179,7 +1179,12 @@ class TestBibChangesAfterTheFinish(MeetApiBase):
         self.post("/api/meet/races/1-1-1/final")
         before = self.placed()
         self.post(f"/api/meet/athletes/{owner.id}/bib", {"bib": ""})
-        self.post("/api/meet/races/1-1-1/refinalize")
+        # a runner who finished would be left out: refused unless forced
+        # (break test 2026-10-13), the old results stay
+        r = self.post("/api/meet/races/1-1-1/refinalize", status=409)
+        self.assertEqual([x["bib"] for x in r["flagged"]], [bib])
+        self.assertEqual(self.placed(), before)
+        self.post("/api/meet/races/1-1-1/refinalize", {"force": True})
         self.assertEqual(self.svc.meet.race(1, 1, 1).status, "final")
         res = self.svc.meet.race(1, 1, 1).results
         self.assertEqual([(i["bib"], i["code"]) for i in res["issues"]], [(bib, "unknown_bib")])

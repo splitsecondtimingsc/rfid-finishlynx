@@ -93,10 +93,12 @@ class TestTeamScoring(unittest.TestCase):
         self.assertAlmostEqual(ridge["total_time"], 900 + 901 + 902 + 904 + 907)
         self.assertAlmostEqual(ridge["avg_time"], (900 + 901 + 902 + 904 + 907) / 5)
         f = by_bib(res)
-        self.assertEqual(f["101"], {"place": 1, "bib": "101", "athlete_id": "a101", "event": 1,
+        self.assertEqual({k: v for k, v in f["101"].items() if k not in ("team_id", "gender")},
+                         {"place": 1, "bib": "101", "athlete_id": "a101", "event": 1,
                                     "elapsed": 900.0, "status": "finished", "event_place": 1,
                                     "points": 1, "scorer": True, "displacer": False,
                                     "fl_only": False, "splits": []})
+        self.assertEqual(f["101"]["team_id"], "t1")      # who they were when frozen (2026-10-13)
         self.assertEqual((f["106"]["points"], f["106"]["scorer"], f["106"]["displacer"]),
                          (11, False, True))
 

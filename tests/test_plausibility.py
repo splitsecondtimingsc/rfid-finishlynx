@@ -114,7 +114,12 @@ class TestEarliestPlausible(unittest.TestCase):
         other = self.m.create_race("Girls JV", event=5, gender="F")
         self.m.set_gun(other, m(6))
         out = self.m.ingest("102", m(7), "S1")
-        self.assertEqual(out["race"], self.race)
+        if self.m.races[self.race].start_list():
+            # owner, 2026-10-13: A has a start list without her, JV is open:
+            # she is JV's, and 1 min after its gun she is too early - held
+            self.assertEqual((out["state"], out["race"]), ("held", None))
+        else:
+            self.assertEqual(out["race"], self.race)
 
     def test_state_round_trip(self):
         with tempfile.TemporaryDirectory() as d:

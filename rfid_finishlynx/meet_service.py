@@ -53,6 +53,10 @@ from .meet.model import (DIVISION_GENDERS, ENTRY_STATUSES, RACE_MARKS, Athlete, 
 logger = logging.getLogger(__name__)
 
 ACTIVE_FILE = "ACTIVE"
+# The meet the race cards loaded on this console belong to (break test
+# 2026-10-13): one line, the meet id; written when a meet is opened with its
+# race cards, removed when Close meet clears them. A detached meet keeps it.
+CARDS_FILE = "CARDS"
 UPLOADS_FILE = "milesplit-uploads.json"
 KINDS = ("xc", "track")
 
@@ -320,6 +324,14 @@ class MeetService:
         # assigned, and bib edits sent at once.
         self.meet_sync = None
         self._ppl_seen: Optional[tuple] = None        # (path, mtime, size), parsed lynx.ppl
+        # The active meet's file could not be read at start (both meet.json
+        # and its .bak): {"id", "error", "text"} for /api/meet and /api/status
+        # instead of a silent fall into legacy mode (break test 2026-10-13).
+        self.load_error: Optional[dict] = None
+        # The open meet was loaded from meet.json.bak (its meet.json was
+        # damaged): the warning, shown for the rest of the session.
+        self._restored_note: Optional[str] = None
+        self._cards_owner: Optional[str] = self._read_cards_owner()
         self._load_active()
 
     # ------------------------------------------------------------ plumbing
@@ -438,10 +450,18 @@ class MeetService:
         if not lines:
             return
         meet_id = lines[0]
+        if self._cards_owner is None and "file-only" not in lines[1:]:
+            # before CARDS existed (2026-10-13): the cards are the active meet's
+            self._set_cards_owner(meet_id)
         try:
             meet = self.store.load(meet_id)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError) as e:
             logger.exception(f"Active meet {meet_id} could not be loaded; legacy mode")
+            self.load_error = {"id": meet_id, "error": str(e), "text": (
+                f"The open meet's file could not be read ({os.path.join(meet_id, MeetStore.FILENAME)}: "
+                f"{e}), nor its backup: no meet is open. Close meet is refused until it is fixed, "
+                f"so the race cards are not archived without their meet. Restore "
+                f"{MeetStore.FILENAME} (e.g. from a closed meet's archive), then restart.")}
             return
         with self._lock:
             self._set_meet_locked(meet)
@@ -458,6 +478,10 @@ class MeetService:
             self._uploads = {}
             self._start_lists = self._blank_start_lists()
         self.meet = meet
+        if not same:
+            self._restored_note = self.store.restored.get(meet.meet.id) if meet is not None else None
+            if meet is not None:
+                self.load_error = None
         self._live_cache.clear()
         self._reindex_locked()
         if meet is not None and not same:
@@ -474,8 +498,145 @@ class MeetService:
             except (OSError, ValueError):
                 self._uploads = {}
 
+    # ------------------------------------------------------------ the race cards' meet
+
+    def _read_cards_owner(self) -> Optional[str]:
+        try:
+            with open(os.path.join(self.root, CARDS_FILE), encoding="utf-8") as f:
+                return (f.read().split() or [None])[0]
+        except OSError:
+            return None
+
+    def _set_cards_owner(self, meet_id: Optional[str]) -> None:
+        if meet_id == self._cards_owner:
+            return
+        self._cards_owner = meet_id
+        path = os.path.join(self.root, CARDS_FILE)
+        try:
+            if meet_id is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(self.root, exist_ok=True)
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                f.write(meet_id + "\n")
+            os.replace(path + ".tmp", path)
+        except OSError:
+            logger.exception("Could not note which meet the race cards belong to")
+
+    @property
+    def cards_owner(self) -> Optional[str]:
+        """The meet id the loaded race cards belong to, or None (none loaded
+        since Close meet, or made without a meet)."""
+        return self._cards_owner
+
+    def cards_closed(self) -> None:
+        """Close meet cleared the race cards and reads (web._close_middleware)."""
+        self._set_cards_owner(None)
+
+    def note_cards(self, meet_id: str) -> None:
+        """A closed meet's race state was just restored (web.reopen_*): the
+        cards are that meet's."""
+        self._set_cards_owner(meet_id)
+
+    def loaded(self) -> dict:
+        """What is on the console's race cards (break test 2026-10-13):
+        {"cards": race cards in use (a gun, final, or reads on them),
+         "reads": reads that count (assigned to a race), "loose": empty race
+         cards + held / ignored reads, "total_cards", "total_reads"}."""
+        self._assert_unlocked()
+        mgr = self._mgr()
+        out = {"cards": 0, "reads": 0, "loose": 0, "total_cards": 0, "total_reads": 0}
+        races = getattr(mgr, "races", None) if mgr is not None else None
+        reads = getattr(mgr, "reads", None) if mgr is not None else None
+        if not isinstance(races, dict) or not isinstance(reads, dict):
+            return out
+        lock = getattr(mgr, "_lock", None) or threading.Lock()
+        with lock:
+            used = set()
+            for r in reads.values():
+                for k in (getattr(r, "race", None), getattr(r, "crossing_race", None)):
+                    if k is not None:
+                        used.add(k)
+            n_used = sum(1 for k, race in races.items()
+                         if k in used or getattr(race, "gun", None) is not None
+                         or getattr(race, "status", "") == "final")
+            n_reads = sum(1 for r in reads.values() if getattr(r, "state", "") == "assigned")
+            out.update(cards=n_used, reads=n_reads, total_cards=len(races), total_reads=len(reads),
+                       loose=len(races) - n_used + len(reads) - n_reads)
+        return out
+
+    def clear_console_for(self, target: Optional[str], file_only: bool = False) -> dict:
+        """Before a meet is opened, created or imported (break test 2026-10-13:
+        a new meet took over the last meet's race cards, a never-run race got
+        the old race's results and Close then filed the old reads under the
+        new meet). target = the meet being opened (None: a new one).
+
+        - The race cards belong to `target` (it was detached, or its race
+          state was just restored): nothing to do, they are its own.
+        - Race cards in use or reads that count: MeetError 409, close the
+          current meet first.
+        - Only empty race cards and held / ignored reads (a test tag or a
+          straggler read after Close meet, the reader still running): they
+          are archived into closed-meets/<date-time>-leftovers and cleared,
+          so the meet starts clean and no held read joins its races.
+          Opening a meet file only (file_only) leaves them where they are.
+        Returns {"owned": bool, "leftovers": archive folder | None}."""
+        out = {"owned": False, "leftovers": None}
+        st = self.loaded()
+        if not st["total_cards"] and not st["total_reads"]:
+            return out
+        if target is not None and target == self._cards_owner:
+            out["owned"] = True
+            return out
+        if st["cards"] or st["reads"]:
+            owner = self._cards_owner
+            whose = f" (they belong to meet {owner})" if owner and owner != target else ""
+            raise MeetError(f"close the current meet first: {st['cards']} race card(s) / "
+                            f"{st['reads']} read(s) are loaded{whose}", 409,
+                            race_cards=st["cards"], reads=st["reads"], cards_meet=owner)
+        if file_only:
+            return out
+        mgr = self._mgr()
+        base = os.path.dirname(os.path.abspath(getattr(mgr, "state_path", None) or "races-state.json"))
+        dest = os.path.join(base, "closed-meets", datetime.now().strftime("%Y%m%d-%H%M%S") + "-leftovers")
+        try:
+            summary = mgr.close_meet(dest)
+        except OSError as e:
+            raise MeetError(f"could not archive the {st['loose']} empty race card(s) / held read(s) "
+                            f"left on the console, nothing changed: {e}", 500) from None
+        self._set_cards_owner(None)
+        logger.info(f"Before opening a meet: {summary['races']} empty race card(s) and "
+                    f"{summary['reads']} held/ignored read(s) archived to {dest} and cleared")
+        out["leftovers"] = dest if summary.get("archived") else None
+        return out
+
+    def close_refusal(self) -> Optional[str]:
+        """Why Close meet must not run now, or None (break test 2026-10-13):
+        no meet is open but the race cards belong to one (it was detached, or
+        its file could not be read at start) - closing would archive them
+        without their meet, and opening that meet later would bring back an
+        older archive."""
+        if self.meet is not None:
+            return None
+        if self.load_error is not None and self.loaded()["total_cards"]:
+            return self.load_error["text"] + " Nothing was closed."
+        owner = self._cards_owner
+        if owner and self.loaded()["total_cards"]:
+            name = owner
+            try:
+                name = self.store.load(owner).meet.name or owner
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            return (f"These race cards belong to {name}, which is not open: open it (Meet > Open), "
+                    f"then Close meet, so they are archived with their meet. Nothing was closed.")
+        return None
+
     def _write_active(self, meet_id: Optional[str], file_only: bool = False) -> None:
         path = self._active_path()
+        if meet_id is not None and not file_only:
+            # the meet's race cards are made / linked now: the cards are its own
+            self._set_cards_owner(meet_id)
         if meet_id is None:
             try:
                 os.remove(path)
@@ -578,6 +739,12 @@ class MeetService:
         if directory:
             self._ensure_monitored(directory)
         self._sync_panes()
+        mgr = self._mgr()
+        if mgr is not None and hasattr(mgr, "recheck_held"):
+            try:
+                mgr.recheck_held()      # break test 2026-10-13: a bib given out later stayed held
+            except Exception:
+                logger.exception("re-checking held reads after a meet change failed")
         self._emit_summary(summary)
         pusher = self._pusher
         if pusher is not None:
@@ -712,7 +879,10 @@ class MeetService:
     def _summary_locked(self) -> dict:
         meet = self.meet
         if meet is None:
-            return {"active": False}
+            out = {"active": False}
+            if self.load_error is not None:
+                out["load_error"] = dict(self.load_error)     # break test 2026-10-13
+            return out
         idx = _entry_index(meet)
         counts = dict.fromkeys(("athletes", "entered", "roster_only", "teams", "races",
                                 "final_races", "with_bib", "missing_bib", "scratched",
@@ -734,6 +904,10 @@ class MeetService:
         counts["ms_share"] = round(cov.share, 4)
 
         fix = []
+        restored = self._restored_note
+        if restored:
+            # meet.json was damaged and the .bak was loaded (break test 2026-10-13)
+            fix.append({"kind": "meet_file", "text": restored, "count": 1, "detail": []})
         conf = bibs.conflicts(meet)
         if conf.missing:
             fix.append({"kind": "no_bib", "text": f"{len(conf.missing)} entered athlete(s) "
@@ -763,7 +937,7 @@ class MeetService:
                         "detail": list(flagged)})
         stale = stale_finals(meet)
         if stale:
-            fix.append({"kind": "stale_final", "text": "final results show old bibs: " + ", ".join(
+            fix.append({"kind": "stale_final", "text": "final results show old bibs, teams or genders: " + ", ".join(
                         f"{race_label(meet, meet.race(*parse_rk(rk)))} ({n})" for rk, n in stale.items())
                         + " - re-finalize", "count": sum(stale.values()), "detail": list(stale)})
         if self._start_lists.get("errors"):
@@ -792,6 +966,7 @@ class MeetService:
         sl = {k: self._start_lists.get(k) for k in ("dir", "written_at", "warnings", "errors",
                                                     "skipped")}
         return {"active": True, "id": meet.meet.id, "file_only": self.file_only,
+                "load_warning": restored or None,
                 "closed_to": self.archived_folder(meet.meet.id) if self.file_only else None,
                 "info": info, "counts": counts, "fix": fix,
                 # the bib check per race, for the race panes' warning (2026-10-10)
@@ -839,6 +1014,7 @@ class MeetService:
         if kind not in KINDS:
             raise MeetError(f"kind must be one of {', '.join(KINDS)}", 400)
         self._sync_round()
+        self.clear_console_for(None)        # break test 2026-10-13
         with self._lock:
             self._refuse_second_import(name=name, day=day)
             meet = self.store.create(name, day, host=str(d.get("host") or ""),
@@ -850,7 +1026,15 @@ class MeetService:
         meet_id = str(meet_id or "").strip()
         if not meet_id or not re.fullmatch(r"[A-Za-z0-9._-]+", meet_id) or not self.store.exists(meet_id):
             raise MeetError(f"no meet {meet_id!r}", 404)
-        meet = self.store.load(meet_id)
+        with self._lock:
+            if self.meet is not None and self.meet.meet.id == meet_id:
+                # already open (break test 2026-10-13: Open twice was a 409)
+                return dict(self._summary_locked(), already_open=True)
+        try:
+            meet = self.store.load(meet_id)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            raise MeetError(f"the meet file of {meet_id} could not be read: {e}", 400) from None
+        self.clear_console_for(meet_id, file_only)
         logger.info(f"Meet opened: {meet_id}" + (" (meet file only)" if file_only else ""))
         return self._activate(meet, file_only=file_only)
 
@@ -880,6 +1064,7 @@ class MeetService:
         src = os.path.dirname(path)
         if os.path.normcase(src) == os.path.normcase(os.path.abspath(os.path.join(self.root, meet_id))):
             return self.open_meet(meet_id)
+        self.clear_console_for(None)        # a new copy: never this console's cards
         with self._lock:
             new_id, n = meet_id, 1
             while self.store.exists(new_id):
@@ -916,6 +1101,7 @@ class MeetService:
         meet_id = meet.meet.id
         if not re.fullmatch(r"[A-Za-z0-9._-]+", meet_id or ""):
             raise MeetError(f"{path}: bad meet id {meet_id!r}", 400)
+        self.clear_console_for(None)        # break test 2026-10-13
         with self._lock:
             new_id, n = meet_id, 1
             while self.store.exists(new_id):
@@ -1160,6 +1346,8 @@ class MeetService:
             raise MeetError("no entries given", 400)
         tc, mid = _opt_int(tc_id, "tc_id"), _opt_int(meet_id, "meet_id")
         sync_error = self._sync_round() if self.meet is None else None
+        if self.meet is None:
+            self.clear_console_for(None)    # a new meet (break test 2026-10-13)
         with self._lock:
             creating = self.meet is None
             if creating:
@@ -1231,6 +1419,8 @@ class MeetService:
         except (ValueError, UnicodeDecodeError) as e:
             raise MeetError(f"{filename}: {e}", 400) from None
         sync_error = self._sync_round() if self.meet is None else None
+        if self.meet is None:
+            self.clear_console_for(None)    # a new meet (break test 2026-10-13)
         with self._lock:
             creating = self.meet is None
             if creating:
@@ -1661,7 +1851,22 @@ class MeetService:
         return report, match, summary
 
     def assign(self, d: dict) -> Tuple[dict, Optional[dict]]:
+        # API fuzz (2026-10-13): a number or text where a list belongs was a 500
+        for k in ("rows", "sort", "athlete_ids"):
+            v = d.get(k)
+            if v is not None and not isinstance(v, list):
+                raise MeetError(f"{k} must be a list", 400)
         rows = d.get("rows")
+        if rows and not all(isinstance(r, (list, tuple)) and len(r) == 2 for r in rows):
+            raise MeetError("rows must be [start, end] pairs", 400)
+        if any(not isinstance(x, str) for x in d.get("sort") or ()):
+            raise MeetError("sort must be a list of sort keys", 400)
+        ptb = d.get("per_team_blocks")
+        if ptb is not None and (isinstance(ptb, bool) or not isinstance(ptb, (int, str))):
+            raise MeetError("per_team_blocks must be a number or round10 / round25", 400)
+        skip = d.get("skip")
+        if skip is not None and not isinstance(skip, (str, list)):
+            raise MeetError("skip must be text or a list of bibs", 400)
         ranges = bibs.parse_range_rows(rows) if rows else None
         kw = {"sort": tuple(d.get("sort") or bibs.DEFAULT_SORT),
               "retain_existing": bool(d.get("retain", True)),
@@ -1671,7 +1876,7 @@ class MeetService:
               "skip": d.get("skip") or ()}
         if d.get("dry_run"):
             with self._lock:
-                rep = bibs.assign(self._require(), ranges=ranges, dry_run=True, **kw)
+                rep = _assign_bibs(self._require(), ranges=ranges, dry_run=True, **kw)
             return rep.to_dict(), None
         # the other PCs' bibs first, so the next free number is free on
         # every PC (2026-10-10); the new ones go out as soon as they're saved
@@ -1680,7 +1885,7 @@ class MeetService:
         def change(meet: Meet):
             if ranges is not None:
                 meet.bib_ranges = ranges
-            return bibs.assign(meet, **kw).to_dict()
+            return _assign_bibs(meet, **kw).to_dict()
         return self._mutate(change, undo="assign bibs")
 
     def clear_bibs(self, d: dict) -> Tuple[dict, dict]:
@@ -2044,6 +2249,13 @@ class MeetService:
                 if meet.event(num) is not None:
                     raise MeetError(f"event {num} already exists", 409)
                 dist = new.get("distance_m")
+                if new.get("distance") not in (None, ""):
+                    # as typed: metres, "2 mi", "5k" (owner, 2026-10-13: 2-mile JV races)
+                    from .races import parse_distance
+                    try:
+                        dist = int(parse_distance(new["distance"]))
+                    except ValueError as e:
+                        raise MeetError(str(e), 400) from None
                 meet.events.append(Event(num, name, gender=gender,
                                          distance_m=_int_in(dist, 0, 10 ** 6, "distance_m")
                                          if dist not in (None, "") else 0,
@@ -2465,7 +2677,7 @@ class MeetService:
         report = {"action": action, "refinalized": [], "errors": [], "milesplit_sent": []}
         for key in finals:
             try:
-                _, _, sent = self.refinalize(rk_of(key))
+                _, _, sent = self.refinalize(rk_of(key), undoable=False)
                 report["refinalized"].append(rk_of(key))
                 if sent:
                     report["milesplit_sent"].append(rk_of(key))
@@ -2545,14 +2757,21 @@ class MeetService:
         logger.info(f"Meet: race {rk_of(ident)} final ({len(warnings)} warning(s))")
         return summary, warnings
 
-    def refinalize(self, rk: str) -> Tuple[dict, List[dict], bool]:
+    def refinalize(self, rk: str, force: bool = False,
+                   undoable: bool = True) -> Tuple[dict, List[dict], bool]:
         """Reopen + Mark final in one step (2026-10-05, user's ask), after a
         bib changed in a final race: its results are worked out again from
         the reads with the bibs athletes hold now and frozen again. All or
         nothing: anything unresolved raises 409 (with the list) and the race
         stays final with its old results. The pane stays final throughout.
         Returns (summary, warnings, sent: its results were on MileSplit
-        before, so the corrected ones should be sent again)."""
+        before, so the corrected ones should be sent again).
+
+        Break test 2026-10-13 (every bib cleared after final, then Re-finalize:
+        0 finishers, 35 flagged): runners who finished in the frozen results
+        and would now be flagged (unknown bib, not entered, scratched) make it
+        409 {error, flagged: [...]}, unless force. undoable: Undo takes the
+        re-finalize back (the old frozen results return)."""
         ident = parse_rk(rk)
         self._refuse_file_only("re-finalized")
         pane = self._pane_links().get(ident)
@@ -2564,12 +2783,21 @@ class MeetService:
             if race.status != "final":
                 raise MeetError("the race is not final: use Mark final", 409)
             frozen = race.results
-        if frozen and frozen.get("finishers") and not (rm and rm.get("finishers")):
+        if _frozen_finishers(frozen) and not (rm and rm.get("finishers")):
             raise MeetError("this race's reads are not loaded, so its results could not be "
                             "worked out again: reopen the meet from its meet folder first", 409)
 
         def change(meet: Meet):
             race = self._race(meet, ident)
+            if not force:
+                lost = _finishers_flagged(meet, frozen, scoring.build_results(meet, race, rm or {})[0])
+                if lost:
+                    raise MeetError(
+                        f"not re-finalized, the old results stay: {len(lost)} runner(s) who finished "
+                        f"would be left out as flagged: " + "; ".join(x["text"] for x in lost[:5])
+                        + (f" (+{len(lost) - 5} more)" if len(lost) > 5 else "")
+                        + ". Fix their bibs or entries first, or re-finalize anyway", 409,
+                        flagged=lost)
             scoring.reopen(meet, race)
             try:
                 return scoring.freeze(meet, race, rm)
@@ -2577,7 +2805,7 @@ class MeetService:
                 raise MeetError(f"not re-finalized, the old results stay: {len(u.issues)} finisher(s) "
                                 f"to resolve first: {u.issues[0]['text']}", 409,
                                 unresolved=u.issues) from None
-        warnings, summary = self._mutate(change)
+        warnings, summary = self._mutate(change, undo=f"re-finalize {rk_of(ident)}" if undoable else "")
         with self._lock:
             sent = bool((self._uploads.get(rk_of(ident)) or {}).get("uploaded_at"))
         logger.info(f"Meet: race {rk_of(ident)} re-finalized with the current bibs "
@@ -2606,7 +2834,7 @@ class MeetService:
         out = {"lif": lif, "refinalized": False, "milesplit_sent": False, "warnings": []}
         if final:
             try:
-                out["meet"], out["warnings"], out["milesplit_sent"] = self.refinalize(rk)
+                out["meet"], out["warnings"], out["milesplit_sent"] = self.refinalize(rk, undoable=False)
                 out["refinalized"] = True
             except MeetError as e:
                 out["refinalize_error"] = str(e)
@@ -2628,7 +2856,10 @@ class MeetService:
         rm = self._rm_results(pane)
         with self._lock:
             frozen = self._race(self._require(), ident).results
-        if frozen and frozen.get("finishers") and not (rm and rm.get("finishers")):
+        if _frozen_finishers(frozen) and not (rm and rm.get("finishers")):
+            # only runners who finished count (break test 2026-10-13: a race
+            # marked final before it was run - everyone DNS - could never be
+            # reopened)
             raise MeetError("this race's reads are not loaded, so its results could not be "
                             "fixed: reopen the meet from its meet folder first", 409)
 
@@ -2992,10 +3223,37 @@ class MeetService:
             return self._live(ident, pane, rm)["results"]
 
 
+def _frozen_finishers(results: Optional[dict]) -> int:
+    """Runners who finished in frozen results (DNF/DQ/DNS rows don't count)."""
+    return sum(1 for f in (results or {}).get("finishers") or [] if f.get("status") == scoring.FINISHED)
+
+
+def _finishers_flagged(meet: Meet, frozen: Optional[dict], new: dict) -> List[dict]:
+    """Runners who finished in `frozen` and are flagged (left out) in `new`
+    (break test 2026-10-13): [{bib, athlete_id, name, code, text}]."""
+    was = {}
+    for f in (frozen or {}).get("finishers") or []:
+        if f.get("status") == scoring.FINISHED:
+            was[str(f.get("bib") or "").strip().lstrip("0")] = f
+    out = []
+    for i in new.get("issues") or []:
+        old = was.get(str(i.get("bib") or "").strip().lstrip("0"))
+        if old is None:
+            continue
+        a = meet.athlete(old.get("athlete_id")) if old.get("athlete_id") else None
+        out.append({"bib": i.get("bib"), "athlete_id": old.get("athlete_id"),
+                    "name": f"{a.last}, {a.first}" if a else "", "code": i.get("code"),
+                    "text": (f"{a.first} {a.last}: " if a else "") + str(i.get("text") or "")})
+    return out
+
+
 def stale_finals(meet: Meet) -> Dict[str, int]:
     """Final races whose frozen results show a bib the athlete no longer
     holds (a swap or a fix after the race went final, 2026-10-05):
-    {rk: how many finishers}. Compared as numbers, as the reader reports."""
+    {rk: how many finishers}. Compared as numbers, as the reader reports.
+    Also (break test 2026-10-13) a team or gender that changed since: the
+    frozen rows carry the athlete's team_id and gender from then (results
+    frozen before that carry neither, and are compared by bib only)."""
     def num(b) -> str:
         b = str(b or "").strip()
         return b.lstrip("0") or ("0" if b else "")
@@ -3007,7 +3265,11 @@ def stale_finals(meet: Meet) -> Dict[str, int]:
         n = 0
         for f in res.get("finishers") or []:
             a = meet.athlete(f.get("athlete_id"))
-            if a is not None and num(a.bib) != num(f.get("bib")):
+            if a is None:
+                continue
+            if (num(a.bib) != num(f.get("bib"))
+                    or ("team_id" in f and (a.team_id or None) != (f["team_id"] or None))
+                    or ("gender" in f and (a.gender or "") != (f["gender"] or ""))):
                 n += 1
         if n:
             out[rk_of(race.key)] = n
@@ -3081,3 +3343,11 @@ def _int_in(v, lo: int, hi: int, what: str) -> int:
     if n is None or not lo <= n <= hi:
         raise MeetError(f"{what} must be {lo}-{hi}", 400)
     return n
+
+
+def _assign_bibs(meet: Meet, **kw):
+    """bibs.assign; a body of the wrong shape is a 400, not a 500 (API fuzz 2026-10-13)."""
+    try:
+        return bibs.assign(meet, **kw)
+    except (TypeError, AttributeError, OverflowError) as e:
+        raise MeetError(f"bad bib assign request: {e}", 400) from None
