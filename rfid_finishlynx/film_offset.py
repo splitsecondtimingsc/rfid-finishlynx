@@ -245,12 +245,24 @@ class FilmOffset:
         self.reset_at = now or datetime.now()
         # Only the evaluated rows are frozen: copied rows carry nothing and
         # must stay visible so the clock-frame baseline can still be found.
-        self.frozen = {key: float(s["lif"]) for key, s in self.samples.items()}
+        # (update, not replace: a race reset on its own earlier stays frozen)
+        self.frozen.update({key: float(s["lif"]) for key, s in self.samples.items()})
         self.samples.clear()
         self.unevaluated.clear()
         self.stale.clear()
         self.outliers.clear()
         self.updated_at = None
+
+    def reset_race(self, key: int):
+        """Start one race over at 0 (its pane's Offset button): its evaluated
+        times are frozen like a full reset, so only finishes evaluated or
+        re-evaluated after this teach it again. Other races keep theirs."""
+        for k in [k for k, s in self.samples.items() if s["race"] == key]:
+            self.frozen[k] = float(self.samples[k]["lif"])
+            del self.samples[k]
+        for d in (self.unevaluated, self.stale, self.outliers):
+            d.pop(key, None)
+        logger.info(f"Film offset: race {key} reset to 0, learning again from new evaluations")
 
     def forget_race(self, key: int):
         """A pane was deleted: its samples and bookkeeping go with it."""

@@ -134,7 +134,11 @@
   input.pt.pin:hover { border-color: var(--ink-3); }
   input.pt.pin:focus { border-color: var(--boys); color: var(--ink); background: var(--surface); outline: none; }
   input.pt.pin::placeholder { color: var(--ink-3); }
-  /* left: running clock, gun, Gun ▾; right: the race's buttons (2026-10-10) */
+  /* left: running clock, gun, Start ▾; right: the race's buttons (2026-10-10) */
+  /* Armed for Space (2026-10-12): amber, the race waits for a Space press */
+  .armed { font-size: 11.5px; font-weight: 700; letter-spacing: .03em; padding: 3px 8px; border-radius: 6px; cursor: pointer;
+           color: var(--warn); border: 1px solid var(--warn); background: none; white-space: nowrap; }
+  .gmark { color: var(--ink-3); cursor: help; }
   .gunrow { align-items: center; flex-wrap: wrap; gap: 6px 12px; }
   .gunrow .gl, .gunrow .gr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .gunrow .gr { margin-left: auto; gap: 6px; }
@@ -331,12 +335,16 @@
   .ico { display: inline-block; vertical-align: -2px; flex: 0 0 auto; }
   .btn[disabled] { opacity: .45; cursor: not-allowed; }
   .tabs { display: flex; gap: 6px; padding: 6px 20px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  /* the page tabs sit in the top bar after the title; the status chips are on the right (owner, 2026-10-12) */
+  .topbar .tabs { padding: 0; border: 0; background: none; margin-right: 4px; }
   .tab { padding: 5px 16px; font-size: 13px; color: var(--ink-3); text-decoration: none; border-radius: 8px;
          border: 1px solid var(--border); background: var(--page); display: inline-flex; align-items: center; gap: 6px; }
   .tab:hover { color: var(--ink); border-color: var(--ink-3); }
   .tab.on { color: var(--ink); background: rgba(57, 135, 229, .28); border-color: var(--boys); font-weight: 600; }
   .cnt { font-size: 10.5px; font-weight: 700; padding: 0 6px; border-radius: 999px; border: 1px solid var(--warn); color: var(--warn); line-height: 16px; }
   .cnt[hidden] { display: none; }
+  /* a chip time put into the merged .lif by hand (owner, 2026-10-12: a colour, not an "in .lif" tag) */
+  .inlif .pt, .inlif input.pt { color: #b48cf2 !important; }
   .mode { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); }
   .mode button { font: inherit; font-size: 12px; padding: 2px 12px; border-radius: 999px; border: 0; background: none; color: var(--ink-3); cursor: pointer; }
   .mode button.on { background: var(--border); color: var(--ink); font-weight: 600; }
@@ -432,11 +440,15 @@
 
 <div class="topbar">
   <h1>RFID Timing Console</h1>
+  <nav class="tabs" id="tabs" aria-label="Console pages">
+    <a href="#races" class="tab on" id="tab-races">Races</a>
+    <a href="#meet" class="tab" id="tab-meet">Meet <span class="cnt" id="meet-cnt" hidden></span></a>
+  </nav>
+  <div class="spacer"></div>
   <span class="chip click" data-pop="app" id="chip-app" onclick="togglePop(this)"><span class="dot" id="st-app"></span> <span id="st-app-t">Console</span></span>
   <span class="chip click" data-pop="stations" id="chip-st" onclick="togglePop(this)"><span id="st-st">Stations</span></span>
   <span class="chip click" data-pop="fl" id="chip-fl" onclick="togglePop(this)"><span class="dot" id="st-fl"></span> <span id="st-fl-t">FinishLynx</span></span>
   <span class="chip click" data-pop="clocks" id="chip-clocks" onclick="togglePop(this)" hidden><span class="dot" id="st-clocks"></span> <span id="st-clocks-t">Clocks</span></span>
-  <div class="spacer"></div>
   <label class="switch" id="pub-switch" title="ON: finish reads go to FinishLynx and the merged .lif files in the RFID folder are written. OFF: reads are still heard, shown and backed up here, but nothing goes to FinishLynx or the .lif files — for warm-ups, tag checks or a test start. Always ON after a restart.">
     <span class="k">Finish Reads</span><input type="checkbox" id="pub-on" checked onchange="setPublishing(this.checked)"><span class="track"></span><span class="v" id="pub-v">ON</span></label>
   <label class="switch live off" id="live-switch" title="No meet open">
@@ -446,10 +458,6 @@
 
 <div id="preview-strip" class="alarm warn" style="border-radius:0;margin:0" hidden></div>
 
-<nav class="tabs" id="tabs" aria-label="Console pages">
-  <a href="#races" class="tab on" id="tab-races">Races</a>
-  <a href="#meet" class="tab" id="tab-meet">Meet <span class="cnt" id="meet-cnt" hidden></span></a>
-</nav>
 
 <div class="toolbar" id="races-toolbar">
   <div class="spacer"></div>
@@ -718,13 +726,22 @@ function filmSummary(fo) {
   return learned.map(r => `${esc(raceNameOf(r.race))} ${fmtOffset(r.applied)} (${r.samples})`).join(' · ');
 }
 /* The pane's own value, in its summary line. */
-function filmPaneHtml(f) {
+/* A small button since 2026-10-12 (owner): click resets this race's
+   learned offset to 0; it then learns again from new evaluations only. */
+function filmPaneHtml(f, key) {
   const tip = !f.apply ? 'Film offset is switched off (FinishLynx chip).'
     : f.source === 'manual' ? 'Manual film offset, the same for every race (FinishLynx chip).'
-    : f.samples ? `Learned from the ${f.samples} finish${f.samples === 1 ? '' : 'es'} evaluated on film in this race; subtracted from its mat finishes.`
+    : f.samples ? `Learned from the ${f.samples} finish${f.samples === 1 ? '' : 'es'} evaluated on film in this race; subtracted from its mat finishes. Click to reset this race to 0.`
     : 'Nothing evaluated on film in this race yet: its mat finishes go uncorrected until FinishLynx saves evaluated times for it.';
-  const v = !f.apply ? 'off' : (f.source === 'manual' || f.samples) ? fmtOffset(f.applied) : '0';
-  return `<span title="${esc(tip)}"><span class="n num">${v}</span> film${!f.apply ? '' : f.source === 'manual' ? ' (manual)' : f.samples ? ` · ${f.samples} eval` : ''}</span>`;
+  const v = !f.apply ? 'off' : (f.source === 'manual' || f.samples) ? fmtOffset(f.applied) : '+0.000 s';
+  const extra = !f.apply ? '' : f.source === 'manual' ? ' (manual)' : f.samples ? ` · ${f.samples} eval` : '';
+  if (f.apply && f.source !== 'manual' && f.samples && key != null)
+    return `<button class="btn small" title="${esc(tip)}" onclick="filmResetRace(${key})">Offset <span class="num">${v}</span>${extra} ↺</button>`;
+  return `<span class="btn small" style="cursor:default" title="${esc(tip)}">Offset <span class="num">${v}</span>${extra}</span>`;
+}
+function filmResetRace(key) {
+  if (!confirm(`Reset ${raceNameOf(key)}'s film offset to 0?\n\nEvery corrected finish in this race moves. It learns again from finishes evaluated (or re-evaluated) on film after now; other races keep theirs.`)) return;
+  api('/api/film_offset', { reset_race: key });
 }
 async function filmSet(body, okText) {
   await popAct('/api/film_offset', body, okText);
@@ -2232,7 +2249,8 @@ function cardHtml(race) {
     ${gtag(race.gender || 'U')}<div class="cc-main"><h2>${esc(race.name)}</h2><div class="sub">Evt ${race.event}-${race.round}-${race.heat}${paneStartText(race)} · ${race.status === 'checkin' ? `<b style="color:var(--boys)">${race.roster_count} checked in</b>` : `roster ${race.roster_count}`}${checkinText(race)}</div></div>
     <span style="margin-left:auto"></span>
     <button class="btn small" onclick="openScoring(${k})" title="Scoring, gender, pace, delete pane">Settings</button>
-    <button class="btn small" onclick="openGun(${k})">Gun ▾</button>
+    <button class="btn small" onclick="openGun(${k})">Start ▾</button>
+    ${armedBadge(race, true)}
     ${checkinButton(race, k)}
     <span class="badge ${race.status}" style="margin-left:0">${race.status.toUpperCase()}</span></div>`;
 }
@@ -2520,23 +2538,23 @@ function paneHtml(race, res, mode) {
       ${gtag(g)}
       <div><h2>${esc(race.name)}</h2><div class="sub">Evt ${race.event}-${race.round}-${race.heat}${paneStartText(race)}</div></div>
       <span style="margin-left:auto"></span>${bibCheckBadge(race)}${crossingsBadge(race)}${lifBadge(race)}
+      ${race.gun && race.status !== 'final' ? (STATUS && STATUS.led_clock_override && STATUS.led_clock_override.mode === 'race' && STATUS.led_clock_override.race === race.key
+        ? `<button class="btn small" style="color:var(--good)" title="The LED clocks are pinned to this race. Click to go back to automatic." onclick="unpinClocks()">● on clocks</button>`
+        : `<button class="btn small" title="Pin every LED clock (finish + split stations) to this race's time, e.g. for a straggler while the next race runs. Changes no gun." onclick="pinClocks(${race.key})">Send to clock</button>`) : ''}
       <button class="btn small" onclick="openScoring(${k})" title="Scoring ${race.scoring.scorers}+${race.scoring.displacers} · fastest pace ${fmtPace(race.fastest_pace || DATA.fastest_pace_default)}/mi · gender · delete pane">Settings</button>
+      ${['pending', 'checkin'].includes(race.status) ? checkinButton(race, k)
+        : race.status !== 'final' ? `<button class="btn small" onclick="closeRace(${k})">Close race</button>`
+        : `<button class="btn small" onclick="api('/api/races/${k}/status',{status:'racing'})">Reopen</button>`}
       <span class="badge ${race.status}" style="margin-left:0">${race.status.toUpperCase()}</span>
     </div>
     ${closing ? `<div class="countdown">Closed · folds to one line in <b class="num" data-until="${closing}"></b><button class="btn" onclick="keepOpen(${k})">Keep open</button></div>` : ''}
     <div class="gunrow">
       <span class="gl">${race.gun && race.status !== 'final' ? `<span class="clock num" data-gun="${esc(race.gun)}"></span>` : ''}
-        <span>Gun <span class="num">${race.gun ? fmtClock(race.gun) : '—'}</span>
-        <span style="color:var(--ink-3)">${esc(race.gun_source)}</span></span>
-        <button class="btn small" onclick="openGun(${race.key})">Gun ▾</button>
-        ${race.gun && race.status !== 'final' ? (STATUS && STATUS.led_clock_override && STATUS.led_clock_override.mode === 'race' && STATUS.led_clock_override.race === race.key
-          ? `<button class="btn small" style="color:var(--good)" title="The LED clocks are pinned to this race. Click to go back to automatic." onclick="unpinClocks()">● on clocks</button>`
-          : `<button class="btn small" title="Pin every LED clock (finish + split stations) to this race's time, e.g. for a straggler while the next race runs. Changes no gun." onclick="pinClocks(${race.key})">Show on clocks</button>`) : ''}</span>
+        <span>Gun <span class="num">${race.gun ? fmtClock(race.gun) : '—'}</span>${race.gun ? ' ' + gunMarkHtml(race.gun_source) : ''}</span>
+        <button class="btn small" onclick="openGun(${race.key})">Start ▾</button>
+        ${armedBadge(race)}</span>
       <span class="gr">
         <button class="btn small" onclick="openAdd(${k})">Add athlete</button>
-        ${['pending', 'checkin'].includes(race.status) ? checkinButton(race, k)
-          : race.status !== 'final' ? `<button class="btn small" onclick="closeRace(${k})">Close race</button>`
-          : `<button class="btn small" onclick="api('/api/races/${k}/status',{status:'racing'})">Reopen</button>`}
         <button class="btn small" onclick="selectLif(${k})" title="Use a FinishLynx .lif as this race&#39;s results: its times replace the finish mat&#39;s">Select .lif file…</button>
         <button class="btn small" onclick="paneMenu(this, ${k})" title="Export CSV, Save .lif, Crossings">More ▾</button></span>
     </div>
@@ -2546,8 +2564,8 @@ function paneHtml(race, res, mode) {
       <span><span class="n num">${finishers.length}</span> / ${race.roster_count} finished</span>
       <span><span class="n num">${onCourse.length}</span> on course</span>
       <span title="${race.status === 'final' ? 'On the roster (checked in) but never read in this race' : 'Checked in, not read on the course yet - listed at the bottom of the table'}"><span class="n num">${notSeen.length}</span> ${race.status === 'final' ? 'no-show' : 'not seen yet'}</span>
-      ${res && res.film ? filmPaneHtml(res.film) : ''}
-      <span class="team">Top team <span class="n num">${res && res.teams.length ? res.teams[0].score : '—'}</span>${res && res.teams.length ? ' ' + esc(res.teams[0].team) : ''}</span>
+      ${res && res.film ? filmPaneHtml(res.film, k) : ''}
+      <span class="team" title="${res && res.teams.length ? 'Leading team: ' + esc(res.teams[0].team) : 'No team score yet'}"><span class="n num">${res && res.teams.length ? res.teams[0].score : '—'}</span> Points${res && res.teams.length ? ' - ' + esc(teamCode(res.teams[0].team)) : ''}</span>
     </div>
     <div class="scroll" data-key="race-${k}"><table>
       <tr>${paneTh(k, 'place', 'Pl', '', 'place')}${dv ? '<th title="Place within the runner\'s own race">Race Pl</th>' : ''}${paneTh(k, 'bib', 'Bib')}${paneTh(k, 'name', 'Athlete', '', 'last name')}${paneTh(k, 'school', 'School')}${pts.map(p => paneTh(k, 'pt:' + p.id, esc(p.label), 'right', esc(p.label) + ' time')).join('')}${paneTh(k, 'finish', 'Finish', 'right', 'finish time')}<th></th></tr>
@@ -2584,7 +2602,7 @@ function cellHtml(s, mBtn) {
   return `${s.estimated ? '~' : ''}${fmtElapsed(s.elapsed)}${cellFlags(s, mBtn)}`;
 }
 function cellFlags(s, mBtn) {
-  return `${s.overridden && !mBtn ? '*' : ''}${s.manual && !s.estimated && !mBtn ? ' <span class="flag">m</span>' : ''}${s.fl_only ? ' <span class="flag miss" title="Only in FinishLynx: the reader has no finish for this athlete. The time is FinishLynx&#39;s, from its saved .lif.">FL only</span>' : ''}${s.corrected ? ` <span class="flag" title="mat read ${fmtElapsed(s.raw_elapsed)}${s.antenna ? ' on A' + s.antenna : ''} − film offset ${(s.correction || 0).toFixed(3)} s">f</span>` : ''}${s.not_in_finishlynx ? ' <span class="flag miss" title="Finished while another race was running: kept out of FinishLynx (it would have landed in that race). It is in this pane, the results and the merged .lif; add it in FinishLynx by hand if you want it there.">not in FL</span>' : ''}`;
+  return `${s.overridden && !mBtn ? '*' : ''}${s.manual && !s.estimated && !mBtn ? ' <span class="flag">m</span>' : ''}${s.fl_only ? ' <span class="flag miss" title="Only in FinishLynx: the reader has no finish for this athlete. The time is FinishLynx&#39;s, from its saved .lif.">FL only</span>' : ''}${s.not_in_finishlynx ? ' <span class="flag miss" title="Finished while another race was running: kept out of FinishLynx (it would have landed in that race). It is in this pane, the results and the merged .lif; add it in FinishLynx by hand if you want it there.">not in FL</span>' : ''}`;
 }
 const DIV_COLORS = ['#4ea1ff', '#f0a83a', '#b48cf2', '#34c3a0'];
 /* A run-together pane's row: its race's colour, tag and place in that race. */
@@ -2636,7 +2654,8 @@ function rowHtml(raceKey, r, pts, newest, dv, iss, plAdj) {
       : fin.fl_untimed ? `<button class="btn lifsave" onclick="chipToLif(${raceKey}, '${esc(r.bib)}', true)" title="${fin.lif_why === 'off_list'
           ? 'Not on this race&#39;s start list (the .evt entries / check-in), and FinishLynx does not have them: nothing of theirs goes into the merged .lif, and a meet race cannot be marked final until you decide. If this is a real finisher (a missed check-in, a late entry), click to put their chip time and splits into the .lif.'
           : 'FinishLynx lists this athlete without a time, so the merged .lif has no result for them (and a meet race cannot be marked final). If this finish-mat read is a real finish (not someone walking past the mat), click to put the chip time into the .lif.'}">${fmtElapsed(fin.elapsed)} · Save to .lif</button>`
-      : `${finCellHtml(raceKey, r, fin)}${fin.chip_in_lif ? ` <span class="flag" style="cursor:pointer" title="Chip time put into the .lif by hand (FinishLynx has no time for this athlete). Click to take it back out." onclick="chipToLif(${raceKey}, '${esc(r.bib)}', false)">in .lif</span>` : ''}`}</td>
+      : fin.chip_in_lif ? `<span class="inlif" title="Chip time put into the .lif by hand (FinishLynx has no time for this athlete). ⋯ → Take out of the .lif undoes it.">${finCellHtml(raceKey, r, fin)}</span>`
+      : finCellHtml(raceKey, r, fin)}</td>
     <td><button class="btn small" title="Edit time, switch bib, reads, remove" onclick="paneRowMenu(this, ${raceKey}, '${esc(r.bib)}')">⋯</button></td>
   </tr>`;
 }
@@ -2699,8 +2718,10 @@ function paneRowMenu(btn, key, bib) {
   const row = (res.finishers || []).concat(res.on_course || []).find(r => String(r.bib) === String(bib)) || { bib };
   const rk = rkOf(race), meet = MEET.active && meetRace(rk);
   const name = row.last_name ? `${row.last_name}${row.first_name ? ', ' + row.first_name : ''}` : '';
+  // a chip time put into the .lif by hand (its time shows in purple) comes back out here (owner, 2026-10-12)
+  const lifOut = row.finish && row.finish.chip_in_lif ? [['Take out of the .lif', () => chipToLif(key, String(bib), false)]] : [];
   if (race.status === 'final') {
-    openMenu(btn, [['Reads…', () => openAthlete(key, String(bib))],
+    openMenu(btn, [['Reads…', () => openAthlete(key, String(bib))], ...lifOut,
                    [`<span style="color:var(--ink-3)">Closed: Reopen to edit times, bibs or remove</span>`, null]]);
     return;
   }
@@ -2709,6 +2730,7 @@ function paneRowMenu(btn, key, bib) {
     ...(meet ? [[`Swap bib ${esc(bib)} with…`, () => issuePickDlg(rk, bib, 'swap', { bib, name, team: row.school || '' })],
                 ['Change bib number…', () => paneChangeBib(bib, name)]] : []),
     ['Reads…', () => openAthlete(key, String(bib))],
+    ...lifOut,
     'hr',
     ['Remove from race', () => { if (confirm(`Remove bib ${bib}${name ? ' (' + name + ')' : ''} and all their reads from ${race.name}? Restorable from Ignored.`)) api(`/api/races/${key}/remove_bib`, { bib: String(bib) }); }, 'danger'],
   ]);
@@ -2737,11 +2759,12 @@ function heldPaneHtml(title, reads, note, key) {
       <span style="margin-left:auto"></span>
       <span class="badge held" style="margin-left:0">${reads.length}</span></div>
     <div class="scroll" data-key="${key || 'pool'}"><table>
-      <tr><th>Bib</th><th>Athlete</th><th>Pt</th><th class="right">Clock</th><th></th></tr>
+      <tr><th>Bib</th><th>Athlete</th><th>Team</th><th>Pt</th><th class="right">Clock</th><th></th></tr>
       ${reads.map(r => `<tr>
         <td class="bib num">${esc(r.bib)}</td>
         <td>${r.last_name ? esc(r.last_name) + (r.first_name ? ', ' + esc(r.first_name) : '') : '<span style="color:var(--ink-3)">not in the roster</span>'}
           <div style="font-size:11px;color:var(--ink-3)">${r.gender ? gtag(r.gender) + ' ' : ''}${esc(r.school || '')}${r.school ? ' · ' : ''}<span class="reason">${esc(r.reason)}</span></div></td>
+        <td class="team" title="${esc(r.school || '')}">${esc(teamCode(r.school))}</td>
         <td><span class="pt">${esc(r.label)}</span></td>
         <td class="right num">${fmtClock(r.clock)}</td>
         <td><button class="btn small" onclick="openAssign(${r.id})">Assign ▾</button></td>
@@ -2785,7 +2808,7 @@ function openCreate() {
       <option value="F">Girls</option><option value="M">Boys</option>
       <option value="X">Mixed — any athlete</option><option value="">— (roster only)</option></select>
     <label>Start time</label><select id="f-gun">${recentStartOptions()}</select>
-    <div class="hint" style="font-size:11.5px;color:var(--ink-3)">Starts already heard from the camera or FinishLynx's clock. Leave on "wait" and the next gun arms this race automatically; every start also appears in the pane's Gun ▾ picker.</div>
+    <div class="hint" style="font-size:11.5px;color:var(--ink-3)">Starts already heard from the camera or FinishLynx's clock. Leave on "wait" and the next gun arms this race automatically; every start also appears in the pane's Start ▾ picker.</div>
     <label>Scorers / displacers</label>
     <div style="display:flex;gap:8px">
       <input id="f-scorers" type="number" value="5"><input id="f-displacers" type="number" value="2"></div>
@@ -2979,7 +3002,13 @@ function paceTyped(key) {
    second while a dialog is open (tickStartOptions). */
 function startOptionLabel(ts, source) {
   const secs = (Date.now() - new Date(ts).getTime()) / 1000;
-  return `${fmtClock(ts)} · ${source} · now +${fmtRace(secs)}`;
+  return `${fmtClock(ts)} (${gunMark(source)}) · ${source} · now +${fmtRace(secs)}`;
+}
+function raceIsAt(key) {
+  const t = gv('f-rt').trim();
+  if (!t) { alert('Type how far into the race it is, e.g. 5:00'); return; }
+  closeDlg();
+  api(`/api/races/${key}/gun`, { race_time: t, source: `race is at ${t}` });
 }
 function startOption(s, extra) {
   return `<option value="${esc(s.ts)}" data-ts="${esc(s.ts)}" data-source="${esc(s.source)}"${extra || ''}>${esc(startOptionLabel(s.ts, s.source))}</option>`;
@@ -2994,6 +3023,37 @@ function optionSource(selectId) {
   return (o && o.dataset.source) || 'picked signal';
 }
 
+/* Where a gun came from, as a short mark after its time (2026-10-12,
+   owner): (cs) camera start, (fl) FinishLynx's clock, (m) anything set by
+   hand - picked time, Gun = now, Space, Race is at... */
+function gunMark(source) {
+  const s = String(source || '').toLowerCase();
+  return s.startsWith('camera') ? 'cs' : s.startsWith('finishlynx') ? 'fl' : 'm';
+}
+function gunMarkHtml(source) {
+  return `<span class="gmark" title="${esc(source || 'manual')}">(${gunMark(source)})</span>`;
+}
+function armedBadge(race, short) {
+  return race.space_armed && !race.gun
+    ? `<button class="armed" title="The next Space press starts this race and its clock. Click (or Esc) to disarm." onclick="armSpace(${race.key}, false)">${short ? 'ARMED' : 'ARMED · Space = start'}</button>` : '';
+}
+function armSpace(key, on) { api(`/api/races/${key}/arm`, { on }); }
+/* Space starts every armed race (2026-10-12, owner: a back-up when the
+   start might be missed). Only while a race is armed, and never while
+   typing in a box; Esc with no dialog open disarms. */
+document.addEventListener('keydown', e => {
+  if (!DATA || !DATA.enabled) return;
+  const armed = DATA.order.map(k => DATA.races[String(k)]).filter(r => r && r.space_armed && !r.gun);
+  if (!armed.length) return;
+  const t = e.target, typing = t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+  if (e.key === ' ' && !typing && !e.repeat) {
+    const at = performance.now();
+    e.preventDefault(); e.stopPropagation();
+    armed.forEach(r => api(`/api/races/${r.key}/gun`, { clock: 'now', source: 'Space', lag_ms: Math.round(performance.now() - at) }));
+  } else if (e.key === 'Escape' && !typing && !document.getElementById('dlg').open) {
+    armed.forEach(r => armSpace(r.key, false));
+  }
+}, true);
 function openGun(key) {
   const race = DATA.races[String(key)];
   // This pane's own candidates first (newest on top), then every other
@@ -3006,13 +3066,19 @@ function openGun(key) {
   const cands = own.map(c => startOption(c, race.gun === c.ts ? ' selected' : '')).join('');
   const extra = others.length
     ? `<optgroup label="Other starts heard by the console">${others.map(s => startOption(s)).join('')}</optgroup>` : '';
-  dlg(`<h3>Gun — ${esc(race.name)}</h3><div class="body">
+  dlg(`<h3>Start — ${esc(race.name)}</h3><div class="body">
     <label>Start signals (time of day · source · race clock if this were the gun)</label>
     <select id="f-cand">${cands || extra ? (cands || '') + extra : '<option value="">none received</option>'}</select>
-    ${race.gun ? `<div class="hint" style="font-size:11.5px;color:var(--ink-3)">Current gun ${fmtClock(race.gun)} (${esc(race.gun_source)}).</div>` : ''}
+    ${race.gun ? `<div class="hint" style="font-size:11.5px;color:var(--ink-3)">Current gun ${fmtClock(race.gun)} (${gunMark(race.gun_source)}: ${esc(race.gun_source)}).</div>` : ''}
     <label>…or set manually (HH:MM:SS.mmm, blank = pick above)</label>
     <input id="f-clock" placeholder="14:05:00.000">
-    All splits and finishes re-derive against the new gun instantly.
+    <label>…or the race is already this far in (e.g. 5:00 — the gun becomes now minus that)</label>
+    <div style="display:flex;gap:8px"><input id="f-rt" placeholder="5:00" style="flex:1" onkeydown="if (event.key === 'Enter') raceIsAt(${key})">
+      <button class="btn" onclick="raceIsAt(${key})">Set</button></div>
+    ${race.gun ? '' : `<div style="margin:10px 0 4px;display:flex;align-items:center;gap:10px">
+      ${race.space_armed ? `<button class="btn" onclick="closeDlg();armSpace(${key}, false)">Disarm Space</button><span class="hint" style="font-size:11.5px;color:var(--warn)">Armed: the next Space press starts this race.</span>`
+        : `<button class="btn" title="Back-up start: press Space when the gun fires. Start signals heard meanwhile only go into the list above." onclick="closeDlg();armSpace(${key}, true)">Arm for Space</button><span class="hint" style="font-size:11.5px;color:var(--ink-3)">The next Space press is the gun and starts the clock (this window must be in front).</span>`}</div>`}
+    All splits and finishes re-derive against the new gun instantly. (cs) camera start · (fl) FinishLynx clock · (m) set by hand.
   </div><div class="foot">
     <button class="btn" onclick="closeDlg()">Cancel</button>
     <button class="btn" onclick="closeDlg();api('/api/races/${key}/gun',{clock:'now',source:'manual now'})">Gun = now</button>
@@ -3403,6 +3469,7 @@ function liveReadsHtml(key, bib) {
       <td class="right num">${esc(r.time || fmtClock(r.ts))}</td>
       <td class="bib num">${esc(r.bib)}</td>
       <td>${esc(who) || '<span style="color:var(--ink-3)">not in roster</span>'}</td>
+      <td class="team" title="${esc(a.school || '')}">${esc(teamCode(a.school))}</td>
       <td><span class="pt">${esc(r.point || r.reader_id || '')}</span></td>
       <td class="right num">${fin ? `<b>${esc(fin)}</b>` : '<span style="color:var(--ink-3)">—</span>'}</td>
     </tr>`;
@@ -3759,6 +3826,19 @@ function racesTabLists() {
 }
 function meetRaceName(rk) { const r = meetRace(rk); return r ? (r.name || `Evt ${rk}`) : (rk ? `Evt ${rk}` : ''); }
 function meetTeam(tid) { return MEET_TEAMS.find(t => t.id === tid) || null; }
+/* A team's short code (2026-10-12, owner: Top team and held reads show the
+   abbreviation): the meet's own code when it has one, else initials. */
+let TEAMS_ASKED = null;
+function teamCode(school) {
+  const s = String(school || '').trim();
+  if (!s) return '';
+  if (MEET.active && !MEET_TEAMS.length && TEAMS_ASKED !== MEET.id) { TEAMS_ASKED = MEET.id; meetLists().then(() => render()); }
+  const low = s.toLowerCase();
+  const t = MEET_TEAMS.find(t => [t.short, t.name, t.code].some(x => x && String(x).toLowerCase() === low));
+  if (t && t.code) return t.code;
+  const words = s.replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+  return (words.length > 1 ? words.map(w => w[0]).join('') : s).slice(0, 4).toUpperCase();
+}
 function meetTeamName(tid) { const t = meetTeam(tid); return t ? (t.short || t.name) : ''; }
 const fullName = v => v ? `${v.last || ''}, ${v.first || ''}` : '';
 const genderWord = g => g === 'F' ? 'Girls' : g === 'M' ? 'Boys' : '';

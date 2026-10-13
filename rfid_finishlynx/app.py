@@ -3089,7 +3089,7 @@ class Application:
         """The operator set a pane's gun by hand (Gun dialog, New race start
         time). That is a deliberate "this race is running": a Time-of-day
         park is released so the clocks follow it (2026-09-30: the clocks sat
-        on time of day after a gun was set, until "Show on clocks"). Starts
+        on time of day after a gun was set, until "Show on clocks", now "Send to clock"). Starts
         that arrive by themselves (camera, FinishLynx) still leave the park
         alone, and a pin or manual count-up is the operator's choice too."""
         if self._clock_override and self._clock_override.get("mode") == "tod":

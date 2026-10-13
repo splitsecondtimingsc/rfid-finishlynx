@@ -288,9 +288,10 @@ start lists are in the RFID folder. With no meet open it asks about MeetPro inst
       at once, one per reader. With start times, the dialog's <b>Meet default</b> (for example open 30 minutes before,
       close at the gun) does this for every race by itself.</li>
   <li><b>The gun</b> arms the race by itself (camera start or FinishLynx's clock). Otherwise open the race's
-      <b class="ui">Gun ▾</b> and pick the start or <b class="ui">Gun = now</b>. The race time runs at the left of the
+      <b class="ui">Start ▾</b> and pick the start or <b class="ui">Gun = now</b> (or <b class="ui">Arm for Space</b>: the next
+      Space press is the gun). The race time runs at the left of the
       pane's gun row while the race is on (a closed race shows none). The LED clocks follow the running race;
-      <b class="ui">Show on clocks</b> puts an earlier race back on them for its stragglers.</li>
+      <b class="ui">Send to clock</b> puts an earlier race back on them for its stragglers.</li>
   <li>Finishers appear as they cross. Each station counts <b>one read per runner</b>: their first crossing. A later
       crossing, like a runner walking back over the finish mat, is ignored and kept out of FinishLynx.
       <b>Needs attention</b> lists anyone missing a mile split (<b class="ui">Estimate</b>, <b class="ui">Add time</b>
@@ -380,7 +381,7 @@ again to finish. Nothing is deleted without a checked copy.</p>
   <tr><td>FinishLynx has no events / old athletes</td><td>Meet → Info, <b>Start lists</b> row. "No FinishLynx (RFID) folder set": the Meet tab's <b class="ui">Lynx folder</b> button → <span class="path">C:\Finish_Lynx_Results</span>. Then check FinishLynx's Input Directory (<a href="#finishlynx">section 4c</a>).</td></tr>
   <tr><td>LED clock dark</td><td>Setup check → clock drivers. If FinishLynx's own scoreboard list has an entry on that clock's COM port, FinishLynx holds the port: remove that entry or pick a different clock.</td></tr>
   <tr><td>Clock shows the wrong thing</td><td>Clocks chip → <b class="ui">Back to auto</b>.</td></tr>
-  <tr><td>Gun not picked up</td><td>Race <b class="ui">Gun ▾</b> → pick the start or <b class="ui">Gun = now</b>. For camera starts: Wireshark installed, FinishLynx open.</td></tr>
+  <tr><td>Gun not picked up</td><td>Race <b class="ui">Start ▾</b> → pick the start or <b class="ui">Gun = now</b>. For camera starts: Wireshark installed, FinishLynx open.</td></tr>
   <tr><td>Live Results switch greyed out</td><td>Log in to MileSplit (Meet → Info) and use a meet imported from MileSplit.</td></tr>
   <tr><td>MileSplit refuses the results</td><td>Too few athletes carry a MileSplit id: Meet → Athletes, <b>MileSplit id review</b>, approve the matches.</td></tr>
   <tr><td>A coach says bibs were swapped (or the wrong kid wore one) after the race</td><td>Results page: <b class="ui">Reopen</b>,

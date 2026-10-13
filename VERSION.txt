@@ -1,2 +1,2 @@
 RFID FinishLynx middleware
-commit 7a478ed (2026-10-12 15:07)
+commit 5ec807c (2026-10-12 21:38)

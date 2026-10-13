@@ -2421,6 +2421,7 @@ def api_film_offset():
                          RFID later than the film); {"manual": null} clears
       {"apply": false}   stop correcting (still learns)
       {"reset": true}    forget the learned samples
+      {"reset_race": 3}  the same for one race (its pane's Offset button)
     """
     mgr = _race_manager()
     if not mgr:
@@ -2440,7 +2441,15 @@ def api_film_offset():
             if abs(manual) > 30:
                 return jsonify({"success": False, "error": "manual offset out of range (±30 s)"}), 400
     apply = bool(d['apply']) if 'apply' in d else None
-    stats = mgr.set_film_offset(manual=manual, apply=apply, reset=bool(d.get('reset')))
+    reset_race = None
+    if d.get('reset_race') is not None:
+        try:
+            reset_race = int(d['reset_race'])
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "reset_race must be a race key"}), 400
+        if reset_race not in mgr.races:
+            return jsonify({"success": False, "error": f"no race {reset_race}"}), 404
+    stats = mgr.set_film_offset(manual=manual, apply=apply, reset=bool(d.get('reset')), reset_race=reset_race)
     if stats["manual"] is not None:
         msg = f"Film offset {stats['manual']:+.3f} s (manual, every race)"
     else:
@@ -4811,8 +4820,24 @@ def api_races_gun(key):
     if not mgr:
         return jsonify({"error": "race manager not enabled"}), 400
     d = request.get_json(force=True)
-    if d.get("clock") == "now":
-        ts = datetime.now()
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    if d.get("race_time") not in (None, ""):
+        # "Race is at…" (2026-10-12, owner): the race has been running this
+        # long, so the gun was that long ago
+        from .film_offset import parse_race_time     # not in the trimmed station package
+        secs = parse_race_time(str(d["race_time"]))
+        if secs is None or secs < 0 or secs > 24 * 3600:
+            return jsonify({"error": "race time like 5:00 or 1:05:00.0"}), 400
+        ts = datetime.now() - timedelta(seconds=secs)
+    elif d.get("clock") == "now":
+        # a Space press sends how long ago it happened (the request's own
+        # trip), so the gun is the key press, not the arrival
+        try:
+            lag = min(max(float(d.get("lag_ms") or 0), 0.0), 5000.0)
+        except (TypeError, ValueError):
+            lag = 0.0
+        ts = datetime.now() - timedelta(milliseconds=lag)
     else:
         try:
             ts = _parse_clock(d["clock"])
@@ -4821,6 +4846,21 @@ def api_races_gun(key):
     mgr.set_gun(key, ts, d.get("source", "manual"))
     if _application and hasattr(_application, "on_operator_gun"):
         _application.on_operator_gun(key)
+    return jsonify({"ok": True})
+
+
+@app.route('/api/races/<int:key>/arm', methods=['POST'])
+def api_races_arm(key):
+    """Arm for Space (Start ▾): body {"on": true|false}. Armed, the next
+    Space press on a console sets the gun; start signals heard meanwhile
+    are only listed in the Start picker."""
+    mgr = _race_manager()
+    if not mgr:
+        return jsonify({"error": "race manager not enabled"}), 400
+    if key not in mgr.races:
+        return jsonify({"error": f"no race {key}"}), 404
+    d = request.get_json(force=True) or {}
+    mgr.arm_space(key, bool(d.get("on", True)))
     return jsonify({"ok": True})
 
 

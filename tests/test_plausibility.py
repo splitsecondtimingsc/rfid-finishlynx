@@ -175,7 +175,8 @@ class TestGenderMode(unittest.TestCase):
         self.open_race("Unknown", "")
         out = self.m.ingest("101", m(7), "S1")
         self.assertEqual(out["state"], "held")
-        self.assertIn("mixed races take anyone", out["reason"])
+        self.assertIn("no open", out["reason"])
+        self.assertNotIn("mixed races take anyone", out["reason"])
 
     def test_girls_race_still_rejects_boys(self):
         self.open_race("Girls", "F")

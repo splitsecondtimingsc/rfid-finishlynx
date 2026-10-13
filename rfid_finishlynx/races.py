@@ -135,6 +135,10 @@ class Race:
     gun: Optional[datetime] = None
     gun_source: str = ""
     gun_candidates: List[dict] = field(default_factory=list)  # {"ts", "source"}
+    # Armed for Space (2026-10-12, owner): the next Space press on the
+    # console is this race's gun. A start signal heard meanwhile is only
+    # listed in the Start picker; it does not take the gun.
+    space_armed: bool = False
     roster: Set[str] = field(default_factory=set)
     checkins: Dict[str, str] = field(default_factory=dict)    # bib -> iso ts
     scoring: ScoringProfile = field(default_factory=ScoringProfile)
@@ -463,6 +467,7 @@ class RaceManager:
             race = self.races[key]
             race.gun = ts
             race.gun_source = source
+            race.space_armed = False
             if not self._near(race.gun_candidates, ts):
                 race.gun_candidates.append({"ts": _ts(ts), "source": source})
             if race.status in ("pending", "checkin"):
@@ -483,13 +488,22 @@ class RaceManager:
             if self._near(race.gun_candidates, ts):
                 return
             race.gun_candidates.append({"ts": _ts(ts), "source": source})
-            first = arm and race.gun is None
+            first = arm and race.gun is None and not race.space_armed
             if first:
                 race.gun = ts
                 race.gun_source = source
                 if race.status in ("pending", "checkin"):
                     race.status = "racing"
                     self._release_reader_locked(key)     # late grace stays
+        self._changed([key])
+
+    def arm_space(self, key: int, on: bool):
+        """Arm (or disarm) a race for a Space-press start. Armed, a start
+        signal only joins the race's candidates; the gun waits for Space or
+        a pick in the Start dialog."""
+        with self._lock:
+            self.races[key].space_armed = bool(on)
+        logger.info(f"Race {key}: {'armed for a Space start' if on else 'Space start disarmed'}")
         self._changed([key])
 
     def delete_race(self, key: int) -> int:
@@ -1269,7 +1283,8 @@ class RaceManager:
             # the only race(s) this athlete could belong to started too
             # recently: hand one back so the caller holds it as "too early"
             return candidates[0], ""
-        return None, f"no chute; no open {who}race (mixed races take anyone)"
+        # "(mixed races take anyone)" dropped from the end (owner, 2026-10-12)
+        return None, f"no chute; no open {who}race"
 
     def _assign(self, read: Read, race_key: int):
         read.race = race_key
@@ -2428,6 +2443,7 @@ class RaceManager:
                     "gun": _ts(r.gun) if r.gun else None,
                     "gun_source": r.gun_source,
                     "gun_candidates": list(r.gun_candidates),
+                    "space_armed": r.space_armed,
                     "roster_count": len(r.roster),
                     "scoring": {"scorers": r.scoring.scorers,
                                 "displacers": r.scoring.displacers},
@@ -2493,6 +2509,7 @@ class RaceManager:
                     "gun": _ts(r.gun) if r.gun else None,
                     "gun_source": r.gun_source,
                     "gun_candidates": r.gun_candidates,
+                    "space_armed": r.space_armed,
                     "roster": sorted(r.roster),
                     "checkins": r.checkins,
                     "scorers": r.scoring.scorers,
@@ -2594,6 +2611,7 @@ class RaceManager:
                 distance=r["distance"], status=r["status"],
                 gun=_parse_ts(r["gun"]) if r["gun"] else None,
                 gun_source=r["gun_source"], gun_candidates=r["gun_candidates"],
+                space_armed=bool(r.get("space_armed")),
                 roster=set(r["roster"]), checkins=r["checkins"],
                 scoring=ScoringProfile(r["scorers"], r["displacers"]),
                 fastest_pace=r.get("fastest_pace"),
@@ -2616,7 +2634,7 @@ class RaceManager:
             self.reads[r["id"]] = Read(
                 id=r["id"], bib=r["bib"], ts=_parse_ts(r["ts"]),
                 point=r["point"], race=r["race"], state=r["state"],
-                reason=r["reason"], manual=r["manual"],
+                reason=str(r["reason"]).replace(" (mixed races take anyone)", ""), manual=r["manual"],
                 estimated=bool(r.get("estimated", False)),
                 override_ts=_parse_ts(r["override_ts"]) if r["override_ts"] else None,
                 reader=str(r.get("reader") or ""),
@@ -2672,12 +2690,15 @@ class RaceManager:
         return changed
 
     def set_film_offset(self, manual=..., apply: Optional[bool] = None,
-                        reset: bool = False) -> dict:
+                        reset: bool = False, reset_race: Optional[int] = None) -> dict:
         """Operator controls: manual override (None clears it; omit to keep),
-        apply on/off, reset = forget the learned samples."""
+        apply on/off, reset = forget the learned samples, reset_race = the
+        same for one race only (its pane's Offset button, 2026-10-12)."""
         with self._lock:
             if reset:
                 self.film.reset()
+            if reset_race is not None:
+                self.film.reset_race(reset_race)
             if manual is not ...:
                 self.film.set_manual(manual)
             if apply is not None:

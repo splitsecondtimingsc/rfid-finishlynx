@@ -106,12 +106,21 @@ a race pane for every race. (Updated 2026-10-05 for the Meet tab.)
 ## During racing
 
 - **Gun**: fires automatically from FinishLynx running-time packets.
-  False trigger (sensor knock)? **Gun ▾** lists every recorded start
-  signal - pick the real one; all times re-derive instantly.
+  False trigger (sensor knock)? **Start ▾** lists every recorded start
+  signal - pick the real one; all times re-derive instantly. Each gun shows
+  where it came from: (cs) camera start, (fl) FinishLynx's clock, (m) set by
+  hand.
+- **Worried the start will be missed?** Start ▾ → **Arm for Space**: the
+  race shows an amber ARMED badge and the next Space press on the console
+  starts it (the console's window must be in front; Esc disarms). A camera
+  start heard meanwhile only goes into the Start ▾ list.
+- **Start missed altogether?** Start ▾ → type how far into the race it is
+  (e.g. 5:00) next to "the race is already this far in"; the gun becomes now
+  minus that.
 - **Advance early**: open the next race whenever - stragglers keep
   auto-assigning to their own race by roster/gender. Never wait.
 - **Clocks for a straggler**: the LED clocks follow the latest racing
-  pane by default. Press **Show on clocks** in the earlier race's gun row
+  pane by default. Press **Send to clock** at the top of the earlier race's pane
   to pin every clock (finish + split stations) to that race's time; no
   gun changes. It releases itself when you close that race, or use
   Back to auto / Follow race in any clock chip.
@@ -311,7 +320,7 @@ without FinishLynx: results to print or send, but no reads.
 |---|---|
 | Station amber (reader down) | It self-heals when the reader answers; swap the reader if not - the box auto-adopts a factory-fresh one, no keyboard. |
 | Station red (silent) | Check station power first, then gateway power/LEDs. The app itself is systemd-restarted forever; software is the least likely cause. |
-| Wrong gun time | Gun ▾ picker. Everything recomputes. |
+| Wrong gun time | Start ▾ picker. Everything recomputes. |
 | Athlete in wrong race | Close race / Mark final lists them: **Switch & close**. By hand: pane row ⋯ -> Move (LIFs for both races regenerate), or Meet → Athletes row ⋮ -> Move race. |
 | FinishLynx has no events / old names | Meet → Info, **Start lists** row: it says why (e.g. no results folder: the **Lynx folder** button → `C:\Finish_Lynx_Results`). |
 | Read missing entirely | Check Held pane first, then the ledgers: `lora-reads-sent.log` (on the Pi) vs `lora-reads-received.log` (finish). Diff = exactly what never crossed, with true timestamps for manual entry. A station that restarts sends again, by itself, every read of the last 6 h the finish line never acknowledged (RESTORED in its ledger); the finish line, restarted or not, counts each once. |

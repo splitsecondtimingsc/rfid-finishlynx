@@ -63,7 +63,7 @@ derives gun = now − race clock).
 
 **Verify:** arm an event in FinishLynx — the console header shows the
 event/heat. Start the clock — a gun candidate appears in the race pane's
-**Gun ▾** picker.
+**Start ▾** picker.
 
 ## 2b. Start gun straight from the camera (no FinishLynx dependency)
 
