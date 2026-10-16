@@ -16,23 +16,36 @@ are marked export-ignore in .gitattributes), plus
                       Google Drive for desktop folder; another edition can
                       name a private git repo). editions.json itself never
                       leaves this repo.
+    meets-access.json the NAS meets repo over HTTPS (2026-10-16), from
+                      private/meets-access.json - only an edition with
+                      "nas_https": true (the fleet), never the public one
+    mingit\\         portable git (MinGit, sha256-checked, cached in
+                      build-cache\\) - only an edition with "mingit": true:
+                      a fresh fleet laptop syncs with no git installed
 Python 3.12 and every package wheel are tracked in git (python\\, wheels\\),
 so the zip installs with no internet. The recipient unzips it and
 double-clicks INSTALL.bat - see QUICK-START.html.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import zipfile
 from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PREFIX = "rfid_finishlynx/"
+# portable git for the fleet package (2026-10-16): Git for Windows' MinGit,
+# checked against the SHA-256 in its release notes
+MINGIT_URL = ("https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.1/"
+              "MinGit-2.56.0-64-bit.zip")
+MINGIT_SHA256 = "064b440ff870ed5198527e8f3a92cdf5bd2fd0fedf5e718af95e3fdaddeff718"
 EDGE = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
 
@@ -50,6 +63,42 @@ def find_git() -> str:
 def git(*args) -> str:
     return subprocess.run([find_git(), "-C", ROOT, *args], check=True,
                           capture_output=True, text=True).stdout.strip()
+
+
+def mingit_zip() -> str:
+    """The MinGit zip, downloaded once into build-cache\\ (git-ignored)."""
+    path = os.path.join(ROOT, "build-cache", MINGIT_URL.rsplit("/", 1)[1])
+    if not os.path.isfile(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        print(f"downloading {MINGIT_URL} ...")
+        with urllib.request.urlopen(MINGIT_URL, timeout=300) as r, open(path + ".part", "wb") as f:
+            shutil.copyfileobj(r, f)
+        os.replace(path + ".part", path)
+    with open(path, "rb") as f:
+        if hashlib.sha256(f.read()).hexdigest() != MINGIT_SHA256:
+            os.remove(path)
+            sys.exit(f"{path}: SHA-256 doesn't match MINGIT_SHA256 - removed; run again")
+    return path
+
+
+def fleet_extras(edition: dict) -> dict:
+    """The fleet's HTTPS way to the NAS meets repo and a git to use it with
+    (2026-10-16): a fresh laptop pulls the meets with nothing set up. Only an
+    edition that asks (nas_https / mingit); never the public one."""
+    extras = {}
+    if edition.get("nas_https"):
+        access = os.path.join(ROOT, "private", "meets-access.json")
+        if os.path.isfile(access):
+            with open(access, "rb") as f:
+                extras[PREFIX + "meets-access.json"] = f.read()
+        else:
+            print("NOTE: no private/meets-access.json - this package reaches the NAS by SSH only")
+    if edition.get("mingit"):
+        with zipfile.ZipFile(mingit_zip()) as mg:
+            for info in mg.infolist():
+                if not info.is_dir():
+                    extras[PREFIX + "mingit/" + info.filename] = mg.read(info)
+    return extras
 
 
 def print_pdf(html_path: str, pdf_path: str) -> bool:
@@ -106,6 +155,7 @@ def main(argv=None) -> int:
                 extras[PREFIX + "support.key"] = f.read().strip() + b"\n"
         else:
             print("NOTE: no private/support.key in the repo - Send logs needs a key pasted on that PC")
+        extras.update(fleet_extras(edition))
         with zipfile.ZipFile(raw) as z:
             names = z.namelist()
             if PREFIX + "QUICK-START.html" in names:

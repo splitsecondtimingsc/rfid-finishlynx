@@ -4609,6 +4609,15 @@ function syncPanelHtml() {
     if (!x) return '';
     return `<span style="font-size:11.5px;color:${x.last_error ? 'var(--warn)' : 'var(--ink-3)'}" title="${esc(x.last_error || '')}">${x.last_error ? 'offline' : 'checked ' + syncAgo(x.last_ok) + ' · ' + syncMoved(x)}</span>`;
   };
+  // Google Drive by sign-in (gdrive.py, 2026-10-16): a fresh PC with no Google Drive app
+  const G = S.google || {}, viaGoogle = (S.folder || '').startsWith('gdrive:');
+  const googleRow = `
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <label style="width:150px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="sy-on-folder"${onFolder ? ' checked' : ''}> Google Drive</label>
+        <span style="flex:1;min-width:140px">${G.signed_in ? `My Drive / <b>${esc(G.folder_name || 'RFID meets')}</b> <span style="color:var(--ink-3)">· signed in as ${esc(G.email || '?')}</span>`
+          : '<span style="color:var(--warn)">Signed out</span>'}</span>
+        <input type="hidden" id="sy-folder" value="${esc(S.folder || '')}">
+        ${G.signed_in ? '<button class="btn" onclick="syncGoogleOut()">Sign out</button>' : '<button class="btn" onclick="syncGoogle(this)">Sign in again</button>'} ${state('folder')}</div>`;
   const place = (id, on, label, inputId, value, placeholder, title) => `
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <label style="width:150px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="${id}"${on ? ' checked' : ''}> ${label}</label>
@@ -4619,8 +4628,11 @@ function syncPanelHtml() {
       ${S.preview ? '<div style="color:var(--warn)">Preview copy: it never syncs.</div>' : ''}
       ${gitOk ? place('sy-on-git', onGit, 'The NAS', 'sy-remote', S.remote, 'myserver:me/meets.git',
                       'The git repo on the NAS, or a folder on a network share') : ''}
-      ${place('sy-on-folder', onFolder, driveOnly ? 'Google Drive' : 'Shared folder', 'sy-folder', S.folder, 'G:\\My Drive\\RFID meets',
+      ${viaGoogle ? googleRow : place('sy-on-folder', onFolder, driveOnly ? 'Google Drive' : 'Shared folder', 'sy-folder', S.folder, 'G:\\My Drive\\RFID meets',
               driveOnly ? 'A folder in My Drive (Google Drive for desktop), the same on every PC' : 'Google Drive for desktop, a network share or any folder the other PCs see')}
+      ${!viaGoogle && G.available ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="width:150px"></span><button class="btn" onclick="syncGoogle(this)">Sign in with Google</button>
+        <span style="color:var(--ink-3)">No Google Drive app on this PC? Sign in instead: meets come straight from My Drive / RFID meets.</span></div>` : ''}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <span style="width:150px;color:var(--ink-3)">This PC</span><input id="sy-machine" value="${esc(S.machine || '')}" style="width:120px" title="Its name on the other PCs"></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -4628,7 +4640,7 @@ function syncPanelHtml() {
         ${S.enabled ? `<button class="btn primary" onclick="syncNow(this)">Sync now</button>
           <span style="color:${S.last_error ? 'var(--warn)' : 'var(--ink-3)'}">${S.last_error ? 'Offline: ' + esc(S.last_error) : 'Looks for changes from the other PCs every 5 min · last look ' + syncAgo(S.last_ok)}</span>` : ''}
         <span id="sy-msg" class="msg-line"></span></div>
-      ${(onFolder && !folderOk) || (!gitOk && !onFolder) ? '<div class="hint" style="margin:0">Install Google Drive for desktop on each PC and pick the same folder in My Drive on all of them. Each PC writes only its own file per meet; edits to different athletes or races on different PCs all come through.</div>' : ''}
+      ${!viaGoogle && ((onFolder && !folderOk) || (!gitOk && !onFolder)) ? '<div class="hint" style="margin:0">Install Google Drive for desktop on each PC and pick the same folder in My Drive on all of them. Each PC writes only its own file per meet; edits to different athletes or races on different PCs all come through.</div>' : ''}
       ${onGit && onFolder ? '<div class="hint" style="margin:0">Both on: every meet goes to each place, so either one is a backup of the other.</div>' : ''}
       ${syncSeparateHtml(S, onGit && onFolder)}
       ${clashes.length ? `<div><div class="lbl" style="margin-bottom:6px;color:var(--warn)">Changed on two PCs (${clashes.length}): ours was kept</div>
@@ -4691,6 +4703,33 @@ async function syncNow(btn) {
     : `Sent ${(rep.published || []).length}, took in ${(rep.merged || []).length}${(rep.waiting || []).length ? `, ${rep.waiting.length} waiting for a race to finish` : ''}`
       + Object.entries(rep.errors || {}).map(([t, e]) => ` · ${t === 'git' ? 'NAS' : 'Shared folder'} offline: ${e}`).join(''),
     r.ok && !rep.error && !Object.keys(rep.errors || {}).length);
+}
+/* Sign in with Google (2026-10-16): Google's page opens in a new tab and
+   sends the browser back to this console, which turns sharing on through
+   My Drive / RFID meets; this page watches for it. */
+async function syncGoogle(btn) {
+  const w = window.open('', '_blank');
+  const r = await meetApi('/api/meet/sync/google/start', {});
+  if (!r.ok) { if (w) w.close(); syncMsg(r.data.error, false); return; }
+  if (w) w.location = r.data.auth_url; else window.location = r.data.auth_url;
+  if (btn) { btn.disabled = true; btn.textContent = 'Waiting for Google…'; }
+  syncMsg("Finish signing in on the new tab (if Google says the app isn't verified: Advanced › Go to …)", true);
+  for (let i = 0; i < 150; i++) {                  // up to 5 minutes
+    await new Promise(res => setTimeout(res, 2000));
+    const s = await meetApi('/api/meet/sync');
+    if (s.ok && s.data.google && s.data.google.signed_in && (s.data.folder || '').startsWith('gdrive:')) {
+      SYNC = s.data; syncRender();
+      syncMsg(`Signed in as ${s.data.google.email}: meets are coming in`, true);
+      return;
+    }
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Sign in with Google'; }
+}
+async function syncGoogleOut() {
+  if (!confirm('Sign this PC out of Google? Meets already here stay; they stop being shared through Google Drive.')) return;
+  const r = await meetApi('/api/meet/sync/google/signout', {});
+  if (!r.ok) { syncMsg(r.data.error, false); return; }
+  SYNC = r.data.sync; syncRender(); syncMsg('Signed out of Google', true);
 }
 async function syncResolve(meet, index, take, target) {
   const r = await meetApi(`/api/meet/sync/conflicts/${encodeURIComponent(meet)}/${index}`, target ? { take, target } : { take });

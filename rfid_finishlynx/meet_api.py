@@ -16,6 +16,7 @@ import html
 import logging
 import os
 import re
+import threading
 from typing import List, Optional, Tuple
 
 from flask import Blueprint, Response, jsonify, request
@@ -177,6 +178,7 @@ def _sync_payload(app) -> dict:
     out = {"enabled": bool(app.meet_sync), "mode": mode, "folder": c.folder,
            "remote": c.remote if "git" in allowed else "", "machine": machine_name(c.machine),
            "preview": not getattr(app, "hardware_allowed", True), "targets_allowed": allowed}
+    out["google"] = _google_payload(app)
     if app.meet_sync is not None:
         out.update(app.meet_sync.status())
         out["clashes"] = app.meet_sync.clashes()
@@ -214,7 +216,7 @@ def sync_settings():
         raise MeetError("this edition shares meets through a Google Drive folder only", 400)
     folder = str(d.get("folder", c.folder) or "").strip()
     remote = str(d.get("remote", c.remote) or "").strip()
-    if mode in ("folder", "both") and not os.path.isdir(folder):
+    if mode in ("folder", "both") and not os.path.isdir(folder) and not folder.startswith("gdrive:"):
         raise MeetError(f"shared folder not found: {folder or '(none)'}", 400)
     if mode in ("git", "both"):
         if not remote:
@@ -227,6 +229,84 @@ def sync_settings():
     app.save_config()
     if getattr(app, "hardware_allowed", True):
         app.start_meet_sync()
+    return _ok(sync=_sync_payload(app))
+
+
+# Google Drive by sign-in (gdrive.py, 2026-10-16, owner: a fresh PC at a
+# meet must pull the meets the first time - it has no Google Drive for
+# desktop). The browser on this PC signs in at Google, which sends it back
+# to the console on 127.0.0.1; the shared folder then becomes "gdrive:<id>".
+
+def _base_dir(app) -> str:
+    """Where meet-sync/ is (app.start_meet_sync's base)."""
+    races = getattr(app.config, "races", None)
+    return os.path.dirname(os.path.abspath(getattr(races, "state_file", None) or "races-state.json"))
+
+
+def _google_payload(app) -> dict:
+    from . import gdrive
+    tok = gdrive.TokenStore(gdrive.token_path(_base_dir(app))).load()
+    return {"available": gdrive.client() is not None, "signed_in": bool(tok.get("refresh_token")),
+            "email": tok.get("email", ""), "folder_name": tok.get("folder_name", ""),
+            "folder_id": tok.get("folder_id", "")}
+
+
+@bp.route("/api/meet/sync/google/start", methods=["POST"])
+def google_start():
+    """{auth_url}: the Google page for the console to open. Only from the
+    browser on this PC - Google sends the answer to 127.0.0.1."""
+    from . import gdrive, web
+    if not web._local_request():
+        raise MeetError("Sign in from the browser on this PC: Google sends the sign-in back to this PC only", 400)
+    if gdrive.client() is None:
+        raise MeetError("Google sign-in isn't set up in this build", 409)
+    port = request.host.rsplit(":", 1)[1] if ":" in request.host.rsplit("]", 1)[-1] else "80"
+    return _ok(auth_url=gdrive.begin(f"http://127.0.0.1:{port}/api/meet/sync/google/callback"))
+
+
+@bp.route("/api/meet/sync/google/callback", methods=["GET"])
+def google_callback():
+    """Where Google sends the browser back: keep the sign-in, share through
+    the account's "RFID meets" folder and look at it at once."""
+    from . import gdrive
+    app = _app()
+    page = ('<!doctype html><meta charset="utf-8"><title>Google sign-in</title>'
+            '<body style="font:15px system-ui;margin:40px;max-width:560px">{}</body>')
+    if request.args.get("error"):
+        return page.format(f"<h2>Not signed in</h2><p>Google said: {html.escape(request.args['error'])}. "
+                           "Close this tab and try again from the console.</p>"), 400
+    try:
+        tok = gdrive.finish(request.args.get("code", ""), request.args.get("state", ""),
+                            gdrive.TokenStore(gdrive.token_path(_base_dir(app))))
+    except (ValueError, gdrive.SyncOffline) as e:
+        return page.format(f"<h2>Not signed in</h2><p>{html.escape(str(e))}</p>"), 400
+    c = app.config.meet_sync
+    git_on = c.enabled and c.mode in ("git", "both")
+    c.folder = gdrive.PREFIX + tok["folder_id"]
+    c.mode, c.enabled = ("both" if git_on else "folder"), True
+    app.save_config()
+    if getattr(app, "hardware_allowed", True):
+        app.start_meet_sync()
+        if app.meet_sync is not None:
+            threading.Thread(target=app.meet_sync.sync_now, daemon=True, name="gdrive-first-look").start()
+    return page.format(f"<h2>Signed in to Google</h2><p>As <b>{html.escape(tok.get('email', ''))}</b>. "
+                       f"Meets are shared through <b>My Drive / {html.escape(tok.get('folder_name', ''))}</b>; "
+                       "the meets already there are coming in now.</p><p>You can close this tab.</p>")
+
+
+@bp.route("/api/meet/sync/google/signout", methods=["POST"])
+def google_signout():
+    from . import gdrive
+    app = _app()
+    gdrive.sign_out(gdrive.TokenStore(gdrive.token_path(_base_dir(app))))
+    c = app.config.meet_sync
+    if c.folder.startswith(gdrive.PREFIX):
+        c.folder = ""
+        c.mode = {"both": "git", "folder": "off"}.get(c.mode, c.mode)
+        c.enabled = c.mode != "off"
+        app.save_config()
+        if getattr(app, "hardware_allowed", True):
+            app.start_meet_sync()
     return _ok(sync=_sync_payload(app))
 
 

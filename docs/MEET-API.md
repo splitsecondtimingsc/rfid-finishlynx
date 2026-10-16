@@ -264,6 +264,9 @@ instead of a git remote.
 | POST | /api/meet/sync | `{}` | Sync now, every place: `{report: {published, merged, added, waiting, errors: {target: msg}} (+ error when all are offline), sync}`; 409 when off |
 | POST | /api/meet/sync/settings | `{mode: off\|folder\|git\|both, folder, remote, machine}` | saved to config.yaml, sync restarted; 400 when a folder doesn't exist or the NAS has no place |
 | POST | /api/meet/sync/conflicts/<meet>/<i> | `{take: theirs\|mine, target}` | settle one clash (target: the place it was recorded on; default the first); 409 while a race runs |
+| POST | /api/meet/sync/google/start | `{}` | Sign in with Google (gdrive.py, 2026-10-16): `{auth_url}` for the browser to open; only from the browser on this PC (Google answers to 127.0.0.1); 409 when this build has no Google client |
+| GET | /api/meet/sync/google/callback | `?code&state` | Google sends the browser here: the sign-in is kept in meet-sync/google-token.json, the shared folder becomes `gdrive:<id>` (My Drive / RFID meets, made if missing) and a first look runs; an HTML page |
+| POST | /api/meet/sync/google/signout | `{}` | forget (and revoke) this PC's Google sign-in; a `gdrive:` folder place is turned off. GET /api/meet/sync carries `google: {available, signed_in, email, folder_name, folder_id}` |
 | POST | /api/meet/sync/separate/<meet> | `{machine, take: theirs\|mine, target}` | another PC's separate import of the meet (2026-10-10): `theirs` replaces this PC's copy with it (ours saved in `<state>/replaced/`), `mine` keeps ours until that copy changes; 409 while a race runs, 404 when nothing is recorded |
 
 Socket `meet_sync` after every round (re-read GET /api/meet/sync).

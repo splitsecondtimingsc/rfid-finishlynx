@@ -22,7 +22,8 @@ class TestPrivateKey(unittest.TestCase):
         return out.strip().rsplit(": ", 1)[-1]
 
     def test_private_folder_is_never_packaged(self):
-        for p in ("private/support.key", "private/README.md", "private/anything-new.txt"):
+        for p in ("private/support.key", "private/meets-access.json", "private/README.md",
+                  "private/anything-new.txt"):
             self.assertEqual(self.attr(p), "set", p)
 
     def test_the_key_is_tracked_but_other_keys_are_not(self):

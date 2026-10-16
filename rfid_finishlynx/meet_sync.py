@@ -46,6 +46,7 @@ same ones): a bib edit is sent at once instead of a minute later
     python -m rfid_finishlynx.meet_sync --once      # one sync with config.yaml
 """
 
+import base64
 import copy
 import gzip
 import hashlib
@@ -468,15 +469,60 @@ class FolderTransport:
         pass
 
 
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def find_git(configured: str = "") -> Optional[str]:
-    """git: the configured path, PATH, then portable MinGit (trailer PC)."""
+    """git: the configured path, PATH, portable MinGit (trailer PC), then the
+    MinGit the fleet package carries (2026-10-16: a fresh laptop has no git)."""
     if configured and os.path.isfile(configured):
         return configured
     found = shutil.which("git")
     if found:
         return found
-    mingit = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "MinGit", "cmd", "git.exe")
-    return mingit if os.path.isfile(mingit) else None
+    for mingit in (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "MinGit", "cmd", "git.exe"),
+                   os.path.join(APP_ROOT, "mingit", "cmd", "git.exe")):
+        if os.path.isfile(mingit):
+            return mingit
+    return None
+
+
+NAS_ACCESS = "meets-access.json"
+
+
+def nas_https(base: Optional[str] = None) -> Optional[dict]:
+    """The fleet's way to the NAS meets repo without an SSH key or Tailscale
+    (2026-10-16, owner: a fresh PC at a meet must pull meets "with my Forgejo
+    access baked in"): {url, user, token} - HTTPS through Tailscale Funnel as
+    the meets-sync account, which can reach leavelw/meets only. In the fleet
+    package's root (build_package, fleet edition only) or private/ in a dev
+    clone; never in the public edition or the GitHub release."""
+    if "git" not in allowed_targets():
+        return None
+    base = base or APP_ROOT
+    for p in (os.path.join(base, NAS_ACCESS), os.path.join(base, "private", NAS_ACCESS)):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("url") and d.get("token"):
+            return d
+    return None
+
+
+def git_env(https: Optional[dict] = None) -> dict:
+    """git's environment: never a prompt (no terminal, no credential window).
+    https: the NAS access - its token goes in an Authorization header through
+    GIT_CONFIG_* (never on a command line, in the remote URL or .git/config)."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never",
+               GIT_SSH_COMMAND=os.environ.get("GIT_SSH_COMMAND", GIT_SSH))
+    if https:
+        auth = base64.b64encode(f"{https.get('user') or 'meets-sync'}:{https['token']}".encode()).decode()
+        env.update(GIT_CONFIG_COUNT="2",
+                   GIT_CONFIG_KEY_0="http.extraHeader", GIT_CONFIG_VALUE_0=f"Authorization: Basic {auth}",
+                   GIT_CONFIG_KEY_1="credential.helper", GIT_CONFIG_VALUE_1="")
+    return env
 
 
 # ssh keepalives end a stalled transfer instead of letting it sit until the
@@ -520,18 +566,19 @@ class GitTransport:
     BRANCH = "main"
 
     def __init__(self, remote: str, clone_dir: str, machine: str, git: str = "",
-                 timeout: float = 60.0):
+                 timeout: float = 60.0, https: Optional[dict] = None):
         self.remote = remote
         self.dir = clone_dir
         self.machine = machine
         self.git_exe = find_git(git)
         self.timeout = timeout
+        self.https = https if https and https.get("url") != remote else None
+        self._url: Optional[str] = None        # where origin points in this run
 
     def _git(self, *args, check=True) -> subprocess.CompletedProcess:
         if not self.git_exe:
             raise SyncOffline("git not found")
-        env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
-                   GIT_SSH_COMMAND=os.environ.get("GIT_SSH_COMMAND", GIT_SSH))
+        env = git_env(self.https if self.https and self._url == self.https["url"] else None)
         cmd = [self.git_exe, "-C", self.dir, "-c", f"user.name={self.machine}",
                "-c", f"user.email={self.machine.lower()}@meet-sync", *args]
         try:
@@ -549,9 +596,36 @@ class GitTransport:
         self._git("init", "-q", "-b", self.BRANCH)
         self._git("remote", "add", "origin", self.remote)
 
+    def _use(self, url: str) -> None:
+        if self._url != url:
+            self._git("remote", "set-url", "origin", url)
+            self._url = url
+
+    def _fetch(self) -> None:
+        """Fetch from the remote; the fleet's NAS by SSH, or else over HTTPS
+        with the package's access (2026-10-16: a PC with no fleet key or no
+        Tailscale - a fresh laptop on a venue hotspot). The way that worked
+        last is tried first."""
+        urls = [self.remote] + ([self.https["url"]] if self.https else [])
+        if self._url in urls:
+            urls.remove(self._url)
+            urls.insert(0, self._url)
+        errors = []
+        for url in urls:
+            self._use(url)
+            try:
+                self._git("fetch", "-q", "origin")
+            except SyncOffline as e:
+                errors.append(str(e) if url == self.remote else f"over HTTPS: {e}")
+                continue
+            if url != self.remote and len(errors):
+                logger.info(f"Meet sync: the NAS by SSH didn't answer ({errors[0][:120]}); using HTTPS")
+            return
+        raise SyncOffline("; ".join(errors))
+
     def fetch(self, seen: Optional[Dict[str, tuple]] = None) -> Dict[str, Dict[str, bytes]]:
         self._ensure_clone()
-        self._git("fetch", "-q", "origin")
+        self._fetch()
         if self._git("rev-parse", "-q", "--verify", f"origin/{self.BRANCH}", check=False).returncode == 0:
             if self._git("rev-parse", "-q", "--verify", "HEAD", check=False).returncode != 0:
                 self._git("reset", "-q", "--hard", f"origin/{self.BRANCH}")
@@ -1262,14 +1336,19 @@ def engines_from_config(config, store_root: str, base_dir: str, store=None) -> L
     store = store or DirStore(store_root)
     out = []
     if ms.mode in ("git", "both") and "git" in allowed:
-        transport = (GitTransport(ms.remote, os.path.join(state, "clone"), machine, ms.git)
+        transport = (GitTransport(ms.remote, os.path.join(state, "clone"), machine, ms.git, https=nas_https())
                      if is_git_remote(ms.remote) else FolderTransport(ms.remote))
         out.append(("git", MeetSync(store, transport, machine, state)))
     if ms.mode in ("folder", "both"):
         drive = os.path.join(state, "drive")
         if ms.mode == "folder":
             _move_folder_state(state, drive)
-        out.append(("folder", MeetSync(store, FolderTransport(ms.folder), machine, drive)))
+        if ms.folder.startswith("gdrive:"):           # Google Drive by sign-in (gdrive.py, 2026-10-16)
+            from . import gdrive
+            transport = gdrive.transport(ms.folder, base_dir)
+        else:
+            transport = FolderTransport(ms.folder)
+        out.append(("folder", MeetSync(store, transport, machine, drive)))
     return out
 
 
@@ -1340,13 +1419,19 @@ def install_setup(base: str, ask: Callable[[str], str] = input) -> int:
         if not git:
             print("  git was not found (fleet-setup installs it). Sharing is set and starts once git is there.")
         else:
-            env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=GIT_SSH)
-            try:
-                ok = run_git([git, "ls-remote", new["remote"]], 30, env).returncode == 0
-            except (OSError, subprocess.TimeoutExpired):
-                ok = False
-            print(f"  The NAS meets repo is {'reachable' if ok else 'not reachable right now'}"
-                  f" ({new['remote']}).{'' if ok else ' Sharing is set and catches up when it is.'}")
+            # by SSH (a fleet PC), else over HTTPS with the package's access (2026-10-16: a fresh PC)
+            https = nas_https(base)
+            ways = [(new["remote"], None, new["remote"])] + ([(https["url"], https, "HTTPS")] if https else [])
+            ok = None
+            for url, access, label in ways:
+                try:
+                    if run_git([git, "ls-remote", url], 30, git_env(access)).returncode == 0:
+                        ok = label
+                        break
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            print(f"  The NAS meets repo is {'reachable (' + ok + ')' if ok else 'not reachable right now'}"
+                  f".{'' if ok else ' Sharing is set and catches up when it is.'}")
     elif want.get("mode") == "folder":
         drive = find_google_drive()
         if not drive:
